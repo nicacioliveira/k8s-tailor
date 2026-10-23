@@ -54,25 +54,31 @@ Object names are fixed (`k8s-tailor`, `k8s-tailor-mcp`, `k8s-tailor-clickhouse`,
 ## Images
 
 The chart's default images (`ghcr.io/nicacioliveira/k8s-tailor{,-mcp}:v<appVersion>`) are
-published by `.github/workflows/build-images.yml` and **do not exist until the owner publishes a
-release**; a pull before that answers `denied`/`not found`. Two ways to get running images:
+published by `.github/workflows/build-images.yml` when a tag `v<appVersion>` is pushed. **`v0.1.0` is
+published** (both images, linux/amd64 and linux/arm64, public; the packaged chart `0.2.0` at
+`oci://ghcr.io/nicacioliveira/k8s-tailor/charts` and as an asset of the GitHub release). Anonymous pulls work, so no pull
+secret is needed:
 
-**A. Publish a release (owner).** This is an action only the repository owner should take: it
-creates public-facing artifacts (tag, GHCR packages, an OCI chart). The workflow builds both images (amd64 + arm64) with
+```bash
+helm install k8s-tailor oci://ghcr.io/nicacioliveira/k8s-tailor/charts/k8s-tailor --version 0.2.0 -n k8s-tailor --create-namespace
+```
+
+Images are not signed. Two other ways to get running images:
+
+**A. Publish a release (maintainer).** Creates public-facing artifacts (tag, GHCR packages, an OCI chart), so only a
+maintainer does it. The workflow builds both images (amd64 + arm64) with
 `GITHUB_TOKEN` (`packages: write`) and pushes the chart to `oci://ghcr.io/nicacioliveira/k8s-tailor/charts`.
 The release tag must equal `v<appVersion>` from `chart/Chart.yaml` (the workflow refuses
 anything else):
 
 ```bash
-# the workflow file must be on the default branch for the manual trigger to exist
-git tag v0.1.0 && git push origin v0.1.0
-# or, without a tag:
-gh workflow run build-images.yml -f version=v0.1.0
+git tag v<appVersion> && git push origin v<appVersion>
+# or, without a tag (only sha-<commit> images, no chart):
+gh workflow run build-images.yml
 ```
 
-The repository is private, so the packages are created **private**: either make each one public
-(GitHub -> profile -> Packages -> `k8s-tailor` / `k8s-tailor-mcp` -> Package settings -> Change
-visibility -> Public), or give the cluster a pull secret:
+If a package is created private (a private fork), make it public (GitHub -> profile -> Packages -> Package settings ->
+Change visibility) or give the cluster a pull secret:
 
 ```bash
 kubectl -n k8s-tailor create secret docker-registry ghcr-pull \

@@ -272,7 +272,7 @@ What the repository's own suites exercise (commands in [Contributing](#contribut
 ## Project status
 
 - **Maturity:** pre-1.0, `v1alpha1` CRDs, chart 0.2.0 / app 0.1.0.
-- **Images:** the chart's default images (`ghcr.io/nicacioliveira/k8s-tailor{,-mcp}:v0.1.0`) are not published until the first release; build locally or publish them ([UPGRADE.md#images](docs/UPGRADE.md#images)). Images are not signed.
+- **Images:** the chart's default images (`ghcr.io/nicacioliveira/k8s-tailor{,-mcp}:v0.1.0`) are published for `v0.1.0` (public, linux/amd64 and linux/arm64; the chart is also at `oci://ghcr.io/nicacioliveira/k8s-tailor/charts`); to build your own see [UPGRADE.md#images](docs/UPGRADE.md#images). Images are not signed.
 - **Cost figures are estimates** from static prices unless `PRICING_MODE=opencost` finds node price metrics; the UI says so.
 - **Auth model:** one shared static token for the write API and another for the MCP, with no per-user identity and no audit of who (the MCP is Bearer-gated twice, nginx and Bun, but still by that one token). Reads of the engine API and `/metrics` are open by default and rely on NetworkPolicy (which needs an enforcing CNI, and which `kubectl port-forward` bypasses); set `tailor.apiAuth.protectReads=true` to require the token for reads too. Put TLS and SSO in front of the UI.
 - **The engine ClusterRole `k8s-tailor-engine` writes** (`pods/resize`, workload patches, CRs, Events), not only reads.

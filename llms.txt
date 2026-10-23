@@ -17,7 +17,7 @@ Key facts: one Go binary (engine, API on :8080, optional admission webhook on :8
 - [docs/TECHNICAL.md](docs/TECHNICAL.md): recommendation math and PromQL, anti-flapping, OOM floor, actuation guards, webhook, metrics, security model
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): symptoms, checks and causes
 - [docs/SCREENS.md](docs/SCREENS.md): dashboard screens explained (synthetic fixture screenshots)
-- [docs/UPGRADE.md](docs/UPGRADE.md): chart upgrade procedure, names and defaults to know, how to get images (the default GHCR images are not published yet: `#images`)
+- [docs/UPGRADE.md](docs/UPGRADE.md): chart upgrade procedure, names and defaults to know, how to get images (the default GHCR images for `v0.1.0` are published: `#images`)
 - [docs/E2E.md](docs/E2E.md): the end-to-end run on k3s 1.34, plus pointers to the Calico and Istio suites
 - [SECURITY.md](SECURITY.md): threat model and hardening checklist
 

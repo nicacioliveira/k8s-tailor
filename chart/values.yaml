@@ -247,8 +247,8 @@ tailor:
   enabled: true
   # Published by .github/workflows/build-images.yml on v* tags (or a manual run).
   # tag "" = v<chart appVersion>; set digest (sha256:...) to pin immutably. A plain
-  # string ("repo:tag") is still accepted. The image must EXIST: until a release is
-  # published, build it yourself (docs/UPGRADE.md#images) and set repository/tag.
+  # string ("repo:tag") is still accepted. The image must EXIST: v0.1.0 is
+  # published; for another version build it yourself (docs/UPGRADE.md#images) and set repository/tag.
   image:
     repository: ghcr.io/nicacioliveira/k8s-tailor
     tag: ""

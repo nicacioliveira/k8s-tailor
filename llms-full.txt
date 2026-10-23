@@ -70,8 +70,8 @@ helm dependency build chart        # chart/charts/ is git-ignored; required on a
 helm upgrade --install k8s-tailor ./chart -n k8s-tailor --create-namespace -f values.yaml --wait --timeout 10m
 ```
 
-Images: defaults `ghcr.io/nicacioliveira/k8s-tailor` and `ghcr.io/nicacioliveira/k8s-tailor-mcp`, tag `v<appVersion>` = v0.1.0. **They do not exist yet** (private repository, no tag pushed): a default install gives ImagePullBackOff. Options (docs/UPGRADE.md#images):
-(a) the repository OWNER publishes (`git tag v0.1.0 && git push origin v0.1.0` or `gh workflow run build-images.yml -f version=v0.1.0`) and makes the packages public or you set `global.imagePullSecrets`; never publish on your own initiative;
+Images: defaults `ghcr.io/nicacioliveira/k8s-tailor` and `ghcr.io/nicacioliveira/k8s-tailor-mcp`, tag `v<appVersion>` = v0.1.0, **published and public** (linux/amd64 and linux/arm64; the chart `0.2.0` is also at `oci://ghcr.io/nicacioliveira/k8s-tailor/charts/k8s-tailor`), so a default install pulls without a secret. Options (docs/UPGRADE.md#images):
+(a) use the published images (default); to publish another version the repository MAINTAINER pushes a tag `v<appVersion>`; never publish on your own initiative;
 (b) build locally (`make docker TAG=dev`), load with `k3d image import k8s-tailor:dev k8s-tailor-mcp:dev -c <cluster>` or `kind load docker-image`, and set `tailor.image.repository/tag`, `mcp.image.repository/tag`.
 
 Production hints: existing Secrets for `tailor.apiAuth`, `mcp.auth`, `clickhouse.auth` and `secretGeneration.failWithoutLookup=true` under GitOps (helm template has no `lookup`); `networkPolicy.mcpFrom` listing the ingress controller namespace; optional

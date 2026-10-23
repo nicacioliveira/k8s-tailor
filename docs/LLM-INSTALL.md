@@ -199,7 +199,7 @@ Widening (more namespaces, `direction: Both`, the webhook) needs a new confirmat
 |---|---|---|
 | `helm dependency build` fails | no network to `victoriametrics.github.io` | report; ask for a chart mirror |
 | `helm template` fails with `lookup` or `certMode=helm` text | GitOps-style render | use `existingSecret`s and `certManager`; read section 3 |
-| `ImagePullBackOff` | the default GHCR images are not published, or are private | docs/UPGRADE.md#images: ask for registry coordinates or use a local build + `k3d image import`/`kind load`; do not tag, push or publish without the owner's confirmation |
+| `ImagePullBackOff` | the tag is not a published release (`v0.1.0` is), or the package is private | docs/UPGRADE.md#images: ask for registry coordinates or use a local build + `k3d image import`/`kind load`; do not tag, push or publish without the owner's confirmation |
 | MCP `CrashLoopBackOff`, "refusing to start ... MCP_API_TOKEN" | no token reached Bun (`mcp.auth.enabled=false` without a token), or an `existingSecret` token with characters outside `A-Z a-z 0-9 . _ ~ + / = -` | restore `mcp.auth.enabled=true`; for an `existingSecret`, regenerate the token with `openssl rand -hex 32` |
 | PVC `Pending` | no default StorageClass | ask for `storageClassName` |
 | S6 stays empty | kubelet metrics not scraped (RBAC `nodes/proxy`, CNI, or a custom store) | `$K -n $NS logs` the vmsingle pod; report; see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
