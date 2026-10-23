@@ -42,7 +42,7 @@ jobs:
             echo "See CHANGELOG.md." > release-notes.md
           fi
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
 
       - name: Package the Helm chart
         run: |
