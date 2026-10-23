@@ -21,7 +21,7 @@ jobs:
     name: Go (fmt, vet, test -race)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
         with:
@@ -61,7 +61,7 @@ jobs:
     name: Helm (lint, template)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: azure/setup-helm@v4
 
@@ -96,7 +96,7 @@ jobs:
     name: MCP (tsc, biome, build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -136,7 +136,7 @@ jobs:
     name: MCP auth gate (nginx + Bun, docker)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: azure/setup-helm@v4
 
