@@ -1,0 +1,123 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $ns := include "tailor.namespace" . }}
+{{- if .Values.tailor.enabled }}
+# Engine: :8080 serves the write API (pause/policies/groups/workload), the
+# workload inventory and /metrics. Only the MCP (the Bearer-gated user entry
+# point), the bundled vmsingle scraper and explicitly listed peers may reach it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: k8s-tailor-engine
+  namespace: {{ $ns }}
+spec:
+  podSelector:
+    matchLabels: { app: k8s-tailor }
+  policyTypes: ["Ingress"]
+  {{- $vm := (index .Values "victoria-metrics-single").enabled }}
+  {{- $peers := or .Values.mcp.enabled $vm .Values.networkPolicy.metricsFrom }}
+  {{- if not (or $peers .Values.tailor.webhook.enabled) }}
+  ingress: []   # no allowed peer configured → deny all ingress
+  {{- else }}
+  ingress:
+    {{- /* An empty `from` would mean "every source": only render the rule with peers. */}}
+    {{- if $peers }}
+    - ports:
+        - { protocol: TCP, port: 8080 }
+      from:
+        {{- if .Values.mcp.enabled }}
+        - podSelector:
+            matchLabels: { app: k8s-tailor-mcp }
+        {{- end }}
+        {{- if $vm }}
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: victoria-metrics-single }
+        {{- end }}
+        {{- with .Values.networkPolicy.metricsFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    {{- end }}
+    {{- if .Values.tailor.webhook.enabled }}
+    # Admission webhook: called by the kube-apiserver, whose source address is
+    # not selectable portably (host network / control plane) — open on 8443
+    # unless networkPolicy.webhookFrom lists the control-plane addresses.
+    - ports:
+        - { protocol: TCP, port: 8443 }
+      {{- with .Values.networkPolicy.webhookFrom }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if .Values.clickhouse.enabled }}
+---
+# ClickHouse: only the engine talks to it (HTTP 8123 / native 9000).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: k8s-tailor-clickhouse
+  namespace: {{ $ns }}
+spec:
+  podSelector:
+    matchLabels: { app: k8s-tailor-clickhouse }
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: k8s-tailor }
+      ports:
+        - { protocol: TCP, port: 8123 }
+        - { protocol: TCP, port: 9000 }
+{{- end }}
+{{- if (index .Values "victoria-metrics-single").enabled }}
+---
+# vmsingle (bundled VictoriaMetrics): no authentication, and it holds the CPU /
+# memory usage of every pod in the cluster plus the Tailor's own metrics. Only
+# the engine (its sole client) and networkPolicy.metricsFrom may query it. Its
+# own scrapes are egress and are not affected.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: k8s-tailor-vmsingle
+  namespace: {{ $ns }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: victoria-metrics-single
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: 8428 }
+      from:
+        - podSelector:
+            matchLabels: { app: k8s-tailor }
+        {{- with .Values.networkPolicy.metricsFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
+{{- if .Values.mcp.enabled }}
+---
+# MCP (UI + /mcp): the user entry point. Even Bearer-gated, it is the path to
+# the engine's write API, so only the release namespace and the peers listed in
+# networkPolicy.mcpFrom (ingress controller, VPN gateway) may reach it.
+# `kubectl port-forward` is not subject to NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: k8s-tailor-mcp
+  namespace: {{ $ns }}
+spec:
+  podSelector:
+    matchLabels: { app: k8s-tailor-mcp }
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - { protocol: TCP, port: {{ if .Values.mcp.auth.enabled }}8080{{ else }}8020{{ end }} }
+      from:
+        - podSelector: {}
+        {{- with .Values.networkPolicy.mcpFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
+{{- end }}

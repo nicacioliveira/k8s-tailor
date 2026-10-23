@@ -1,0 +1,41 @@
+# K8s Tailor
+
+> K8s Tailor is a self-hosted Kubernetes pod rightsizer built around in-place resize (the pods/resize subresource, Kubernetes 1.33 and later). It measures per-container CPU and memory usage from kubelet metrics, computes right-sized requests with decay-weighted percentiles, a memory peak floor and a gated seasonal forecast, and applies them to running pods without restarting them, keeping an auditable decision trail. Configuration is Kubernetes CRs (TailorPolicy, TailorProfile, TailorGroup, TailorConfig). It ships inert (recommend-only), is pre-1.0 and requires Kubernetes 1.33 or later (the project suites run on k3s v1.34). Its default container images are not published yet. Links are repository-relative paths.
+
+Key facts: one Go binary (engine, API on :8080, optional admission webhook on :8443, `backtest` subcommand), a Bun/React MCP server and dashboard (:8020; the dashboard is also an MCP App, the open MCP extension SEP-1865: `ui://` resource, `text/html;profile=mcp-app`), one Helm chart bundling VictoriaMetrics and a single-node ClickHouse (both replaceable). Modes: Off, Recommend, Webhook, InPlace, Both. License: Apache-2.0.
+
+## Start here
+
+- [README.md](README.md): what it is, related projects and inspirations (VPA, KRR, Goldilocks, OpenCost, Karpenter), features, quickstart, safety model, limitations
+- [docs/INSTALL.md](docs/INSTALL.md): installing on real clusters, prerequisites, progressive rollout, verification, uninstall
+- [docs/LLM-INSTALL.md](docs/LLM-INSTALL.md): deterministic runbook for an LLM agent installing on a cluster (preflight, decision tree, success criteria, hard rules)
+
+## Reference
+
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md): Helm values, engine environment variables, CRD fields, annotations, engine HTTP API, MCP tools
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): Mermaid diagrams of context, containers, deployment topology, data flow, reconcile and webhook sequences, resize state machine, decision flow, CRD model
+- [docs/TECHNICAL.md](docs/TECHNICAL.md): recommendation math and PromQL, anti-flapping, OOM floor, actuation guards, webhook, metrics, security model
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md): symptoms, checks and causes
+- [docs/SCREENS.md](docs/SCREENS.md): dashboard screens explained (synthetic fixture screenshots)
+- [docs/UPGRADE.md](docs/UPGRADE.md): chart upgrade procedure, names and defaults to know, how to get images (the default GHCR images are not published yet: `#images`)
+- [docs/E2E.md](docs/E2E.md): the end-to-end run on k3s 1.34, plus pointers to the Calico and Istio suites
+- [SECURITY.md](SECURITY.md): threat model and hardening checklist
+
+## Working on the repository
+
+- [AGENTS.md](AGENTS.md): repository map, commands, conventions, what not to touch
+- [CONTRIBUTING.md](CONTRIBUTING.md): dev loop and pull requests
+- [dev/k3s/README.md](dev/k3s/README.md): local k3d environment and smoke tests
+- [dev/calico/README.md](dev/calico/README.md): NetworkPolicy suite on a Calico-enforcing k3d cluster (8 scenarios, Docker-runtime findings)
+- [dev/istio/README.md](dev/istio/README.md): Istio 1.31.3 mesh suite on k3d (classic and native sidecars)
+- [docs/BACKTEST.md](docs/BACKTEST.md): offline backtest CLI against KRR and VPA
+
+## Optional
+
+- [llms-full.txt](llms-full.txt): the essential content of the documentation concatenated in one file
+- [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md): remaining limitations and design decisions, with reasons and workarounds
+- [docs/CONTAINERS.md](docs/CONTAINERS.md): multi-container pods, init containers and sidecars
+- [docs/ADVISOR.md](docs/ADVISOR.md): optional read-only LLM advisor
+- [docs/ROADMAP.md](docs/ROADMAP.md): direction and open decisions
+- [docs/PRODUCT.md](docs/PRODUCT.md) and [docs/DESIGN.md](docs/DESIGN.md): product intent and UI design notes
+- [deploy/README.md](deploy/README.md): Argo CD and Flux examples (including ignore rules for engine-owned workload fields), ExternalSecret, Grafana dashboard

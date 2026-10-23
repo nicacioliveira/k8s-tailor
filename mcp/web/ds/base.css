@@ -1,0 +1,48 @@
+/* Base styles (design tokens). */
+@layer base {
+  html {
+    font-size: var(--font-size-root);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-family-body);
+    font-weight: var(--font-weight-body);
+    font-feature-settings: var(--font-feature-body);
+    font-optical-sizing: auto;
+    line-height: var(--line-height-body);
+    letter-spacing: var(--letter-spacing-body);
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    letter-spacing: var(--letter-spacing-heading);
+    text-wrap: balance;
+  }
+  /* Numbers align by column. */
+  table,
+  [data-money] {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Focus: solid 2px outline, 2px offset (>= 3:1, WCAG 1.4.11). */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

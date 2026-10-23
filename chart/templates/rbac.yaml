@@ -1,0 +1,229 @@
+{{- $ns := include "tailor.namespace" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-tailor
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+---
+# Cluster role for the engine (reads AND writes: pods/resize, workload patches,
+# Tailor CRs, Events). Least privilege: every verb below
+# is one the engine's clients actually call (internal/k8s, internal/policy,
+# internal/leader) — no watch (it polls with List), no update on pods/workloads
+# (it only patches), no nodes (that is vmsingle's SA), no events.k8s.io, no
+# secrets. Every write is reachable from the /api write endpoints, which are
+# Bearer-gated by default (tailor.apiAuth). For a hard limit on WHAT a patch may
+# change, enable tailor.admissionPolicy (ValidatingAdmissionPolicy).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-tailor-engine
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+rules:
+  # recommender: current resources + pod -> workload ownership; per-workload
+  # override on owner-less Pods + the durable cooldown stamp (metadata patch).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "patch"]
+  # in-place actuation: resize running pods (no restart). Only on workloads whose
+  # resolved TailorPolicy mode is InPlace/Both.
+  - apiGroups: [""]
+    resources: ["pods/resize"]
+    verbs: ["patch"]
+  # auditable trail: core/v1 Events on the pod/workload for each applied change.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create"]
+  # PodDisruptionBudget awareness before a disruptive resize
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["list"]
+  # HPA coexistence: never fight a horizontal autoscaler on CPU
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["list"]
+  # Knative: list to detect ksvc ownership/traffic; get+update for the durable
+  # resize (a new revision).
+  - apiGroups: ["serving.knative.dev"]
+    resources: ["services"]
+    verbs: ["get", "list", "update"]
+  # workloads: inventory + template rollouts + override annotations (patch only)
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["list", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list"]
+  {{- if .Values.tailor.rbac.clusterLookups }}
+  # opt-in tailor.rbac.clusterLookups: cap a memory request at the largest
+  # schedulable node and the namespace LimitRange max (read only).
+  - apiGroups: [""]
+    resources: ["nodes", "limitranges"]
+    verbs: ["list"]
+  {{- end }}
+  # reusable scaling models — read only
+  - apiGroups: ["tailor.k8s-tailor.dev"]
+    resources: ["tailorprofiles"]
+    verbs: ["list"]
+  # policies / groups — managed from the UI/MCP
+  - apiGroups: ["tailor.k8s-tailor.dev"]
+    resources: ["tailorpolicies", "tailorgroups"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  # config singleton (global pause / defaultMode / exclusions)
+  - apiGroups: ["tailor.k8s-tailor.dev"]
+    resources: ["tailorconfigs"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-tailor-engine
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-tailor-engine
+subjects:
+  - kind: ServiceAccount
+    name: k8s-tailor
+    namespace: {{ $ns }}
+{{- if .Values.tailor.leaderElection.enabled }}
+---
+# Leader election for the actuating reconciler (coordination.k8s.io Lease),
+# namespaced to the release namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: k8s-tailor-leader-election
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-tailor-leader-election
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: k8s-tailor-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: k8s-tailor
+    namespace: {{ $ns }}
+{{- end }}
+{{- $wc := .Values.tailor.warmCache | default dict }}
+{{- if (hasKey $wc "enabled" | ternary $wc.enabled true) }}
+---
+# Warm cache (WARM_CACHE): the leader writes the ConfigMap k8s-tailor-warm with the
+# recommendations the webhook can serve, and a starting replica reads it. Namespaced
+# to the release namespace; get/update only on that one object (create cannot be
+# restricted by name).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: k8s-tailor-warm-cache
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["k8s-tailor-warm"]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-tailor-warm-cache
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: k8s-tailor-warm-cache
+subjects:
+  - kind: ServiceAccount
+    name: k8s-tailor
+    namespace: {{ $ns }}
+{{- end }}
+{{- $vm := index .Values "victoria-metrics-single" }}
+{{- if $vm.enabled }}
+---
+# vmsingle's own identity (ServiceAccount created by the subchart): kubelet
+# /metrics/resource and /metrics/cadvisor through the API server proxy
+# (nodes/proxy get) + node service discovery (nodes list/watch). Kept OFF the
+# engine SA: nodes/proxy reaches the kubelet API of every node.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-tailor-vmsingle
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-tailor-vmsingle
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-tailor-vmsingle
+subjects:
+  - kind: ServiceAccount
+    name: {{ $vm.serviceAccount.name | default "k8s-tailor-vmsingle" }}
+    namespace: {{ $ns }}
+---
+# Pod service discovery for the engine's /metrics (job "tailor", one target per
+# engine replica): pods get/list/watch in the release namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: k8s-tailor-vmsingle-pods
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-tailor-vmsingle-pods
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: k8s-tailor-vmsingle-pods
+subjects:
+  - kind: ServiceAccount
+    name: {{ $vm.serviceAccount.name | default "k8s-tailor-vmsingle" }}
+    namespace: {{ $ns }}
+{{- end }}

@@ -1,0 +1,11 @@
+K8s Tailor design system assets
+===============================
+
+This directory holds the dashboard's design tokens and base styles
+(tokens.css, tailwind.css, base.css, fonts.css) and the font files they
+reference. The React components that use them live in ../ui/.
+
+Fonts
+  fonts/InterVariable-latin.woff2 - Inter 4 (latin subset), distributed under the
+  SIL Open Font License 1.1. Copyright (c) The Inter Project Authors
+  (https://github.com/rsms/inter). Full license text: fonts/Inter-OFL.txt.

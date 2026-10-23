@@ -1,0 +1,161 @@
+{{- if and .Values.tailor.enabled .Values.tailor.admissionPolicy.enabled }}
+{{- $ns := include "tailor.namespace" . }}
+{{- $sa := printf "request.userInfo.username == 'system:serviceaccount:%s:k8s-tailor'" $ns }}
+{{- /* Pod-template annotations the engine writes to size an injected mesh proxy:
+EXACTLY internal/recommender/containers.go ProxyAnnotationKeys (Istio, Linkerd).
+No prefix match: sidecar.istio.io/proxyImage or config.linkerd.io/proxy-image
+would swap the proxy image. */}}
+{{- $meshKeys := list "sidecar.istio.io/proxyCPU" "sidecar.istio.io/proxyMemory" "sidecar.istio.io/proxyCPULimit" "sidecar.istio.io/proxyMemoryLimit" "config.linkerd.io/proxy-cpu-request" "config.linkerd.io/proxy-memory-request" "config.linkerd.io/proxy-cpu-limit" "config.linkerd.io/proxy-memory-limit" }}
+{{- $meshList := printf "['%s']" (join "', '" $meshKeys) }}
+{{- $metaVars := `
+    - name: oldLabels
+      expression: "has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}"
+    - name: newLabels
+      expression: "has(object.metadata.labels) ? object.metadata.labels : {}"
+    - name: oldAnn
+      expression: "has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}"
+    - name: newAnn
+      expression: "has(object.metadata.annotations) ? object.metadata.annotations : {}"` }}
+{{- $metaRules := `
+    - expression: "variables.newLabels == variables.oldLabels"
+      message: "k8s-tailor may not change labels"
+    - expression: "variables.newAnn.all(k, k.startsWith('tailor.k8s-tailor.dev/') || k == 'deprecated.daemonset.template.generation' || (k in variables.oldAnn && variables.oldAnn[k] == variables.newAnn[k])) && variables.oldAnn.all(k, k.startsWith('tailor.k8s-tailor.dev/') || k in variables.newAnn)"
+      message: "k8s-tailor may only add/change/remove tailor.k8s-tailor.dev/* annotations"
+    - expression: "(has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []) == (has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : []) && (has(object.metadata.finalizers) ? object.metadata.finalizers : []) == (has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : [])"
+      message: "k8s-tailor may not change ownerReferences or finalizers"` }}
+{{- /* deprecated.daemonset.template.generation: bumped by the API server itself
+(before admission) on every DaemonSet template change. */}}
+{{- /* Every key of each container except `resources` must be unchanged (same
+names, same count). dyn(): iterate the fields of a typed object as a map — a
+field added by a future Kubernetes version is frozen too (deny by default). */}}
+{{- $sameContainers := `%[1]s.size() == %[2]s.size() && %[1]s.all(c, %[2]s.exists(o, o.name == c.name && dyn(c).all(k, k == 'resources' || (k in dyn(o) && dyn(c)[k] == dyn(o)[k])) && dyn(o).all(k, k == 'resources' || k in dyn(c))))` }}
+# Defense in depth (k8s >= 1.30, admissionregistration.k8s.io/v1): whatever the
+# engine's RBAC allows, a write by ITS ServiceAccount to a workload or pod may only
+# change what the engine itself writes:
+#   workloads: container/initContainer `resources`, tailor.k8s-tailor.dev/*
+#              annotations and the 8 exact mesh proxy-sizing pod-template
+#              annotations. Everything else in spec (replicas, selector, strategy,
+#              the whole pod spec: image, command, env, volumes, hostPath,
+#              securityContext, serviceAccountName...), labels, ownerReferences and
+#              finalizers is frozen.
+#   pods:      spec frozen entirely (resizes go through the pods/resize
+#              subresource, which these rules do not match); tailor.* annotations.
+# Not covered: Knative Services (get+update of the whole ksvc) — SECURITY.md.
+# One policy per schema shape so every CEL expression type-checks.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: k8s-tailor-patch-scope-workloads
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["deployments", "statefulsets", "daemonsets"]
+  matchConditions:
+    - name: tailor-service-account
+      expression: {{ $sa | quote }}
+  variables:
+    {{- $metaVars }}
+    - name: oldSpec
+      expression: "dyn(oldObject.spec)"
+    - name: newSpec
+      expression: "dyn(object.spec)"
+    - name: oldTplMeta
+      expression: "has(oldObject.spec.template.metadata) ? dyn(oldObject.spec.template.metadata) : dyn({})"
+    - name: newTplMeta
+      expression: "has(object.spec.template.metadata) ? dyn(object.spec.template.metadata) : dyn({})"
+    - name: oldTpl
+      expression: "has(oldObject.spec.template.metadata) && has(oldObject.spec.template.metadata.annotations) ? oldObject.spec.template.metadata.annotations : {}"
+    - name: newTpl
+      expression: "has(object.spec.template.metadata) && has(object.spec.template.metadata.annotations) ? object.spec.template.metadata.annotations : {}"
+    - name: oldPod
+      expression: "dyn(oldObject.spec.template.spec)"
+    - name: newPod
+      expression: "dyn(object.spec.template.spec)"
+    - name: oldInit
+      expression: "has(oldObject.spec.template.spec.initContainers) ? oldObject.spec.template.spec.initContainers : []"
+    - name: newInit
+      expression: "has(object.spec.template.spec.initContainers) ? object.spec.template.spec.initContainers : []"
+    - name: meshKeys
+      expression: {{ $meshList | quote }}
+  validations:
+    {{- $metaRules }}
+    - expression: "variables.newSpec.all(k, k == 'template' || (k in variables.oldSpec && variables.newSpec[k] == variables.oldSpec[k])) && variables.oldSpec.all(k, k == 'template' || k in variables.newSpec)"
+      message: "k8s-tailor may not change the workload spec outside the pod template (replicas, selector, strategy...)"
+    - expression: "variables.newTplMeta.all(k, k == 'annotations' || (k in variables.oldTplMeta && variables.newTplMeta[k] == variables.oldTplMeta[k])) && variables.oldTplMeta.all(k, k == 'annotations' || k in variables.newTplMeta)"
+      message: "k8s-tailor may not change pod-template labels or metadata"
+    - expression: "variables.newTpl.all(k, k.startsWith('tailor.k8s-tailor.dev/') || k in variables.meshKeys || (k in variables.oldTpl && variables.oldTpl[k] == variables.newTpl[k])) && variables.oldTpl.all(k, k in variables.newTpl || k.startsWith('tailor.k8s-tailor.dev/') || k in variables.meshKeys)"
+      message: "k8s-tailor may only touch tailor.k8s-tailor.dev/* and the mesh proxy-sizing (cpu/memory) pod-template annotations"
+    - expression: "variables.newPod.all(k, k in ['containers', 'initContainers'] || (k in variables.oldPod && variables.newPod[k] == variables.oldPod[k])) && variables.oldPod.all(k, k in ['containers', 'initContainers'] || k in variables.newPod)"
+      message: "k8s-tailor may not change the pod spec (volumes, hostPath, serviceAccountName, securityContext, scheduling...)"
+    - expression: {{ printf $sameContainers "object.spec.template.spec.containers" "oldObject.spec.template.spec.containers" | quote }}
+      message: "k8s-tailor may only change containers' resources (not image, command, args, env, mounts, probes, securityContext...)"
+    - expression: {{ printf $sameContainers "variables.newInit" "variables.oldInit" | quote }}
+      message: "k8s-tailor may only change initContainers' resources"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: k8s-tailor-patch-scope-replicas
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["deployments", "statefulsets"]
+  matchConditions:
+    - name: tailor-service-account
+      expression: {{ $sa | quote }}
+  validations:
+    # Also covered by the workload-spec rule above; kept as an explicit message.
+    - expression: "has(object.spec.replicas) == has(oldObject.spec.replicas) && (!has(object.spec.replicas) || object.spec.replicas == oldObject.spec.replicas)"
+      message: "k8s-tailor may not change replicas"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: k8s-tailor-patch-scope-pods
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      # The main pods resource only: pods/resize (the in-place resize path) is a
+      # different resource and is not matched.
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["pods"]
+  matchConditions:
+    - name: tailor-service-account
+      expression: {{ $sa | quote }}
+  variables:
+    {{- $metaVars }}
+  validations:
+    {{- $metaRules }}
+    - expression: "object.spec == oldObject.spec"
+      message: "k8s-tailor may not change a pod's spec (in-place resizes use the pods/resize subresource)"
+{{- range list "workloads" "replicas" "pods" }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: k8s-tailor-patch-scope-{{ . }}
+  labels:
+    {{- include "tailor.labels" $ | nindent 4 }}
+spec:
+  policyName: k8s-tailor-patch-scope-{{ . }}
+  validationActions:
+    {{- toYaml $.Values.tailor.admissionPolicy.validationActions | nindent 4 }}
+{{- end }}
+{{- end }}

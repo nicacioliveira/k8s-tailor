@@ -1,0 +1,63 @@
+# Flux Kustomization for YOUR workloads (not for K8s Tailor itself) when the
+# engine may patch their controller templates (`apply: Rollout`,
+# `InPlacePreferred` falling back to a rollout, Knative Services,
+# `proxyAnnotations`). Without it, kustomize-controller re-applies the Git
+# values, the template changes, the pods roll, and the engine resizes again
+# after its cooldown: a loop of rollouts. In-place resizes (`apply: InPlace`)
+# never touch the template and need none of this.
+#
+# `.spec.ignore` (kustomize.toolkit.fluxcd.io/v1) removes these fields from
+# drift detection and correction. The engine writes them with patches
+# (Update-type field manager), so at apply time the controller ADOPTS the live
+# value instead of reverting it (fluxcd.io docs, Kustomization "Ignore").
+#
+# Limits: paths are JSON Pointers (RFC 6901) — no wildcards, so containers are
+# addressed by INDEX (list one entry per container the engine may resize, in the
+# order of your manifest); "/" in an annotation key is written "~1". `target`
+# fields accept regular expressions. The trade-off: Flux no longer reports or
+# reverts manual edits of these fields.
+#
+# For a workload installed by a HelmRelease see helmrelease.yaml (different
+# semantics: Helm upgrades still write the chart's values).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: portal # your application
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: portal
+  path: ./deploy
+  prune: true
+  targetNamespace: portal
+  ignore:
+    - target:
+        group: apps
+        kind: ^(Deployment|StatefulSet|DaemonSet)$
+      paths:
+        # container resources: one pointer per container index
+        - /spec/template/spec/containers/0/resources
+        - /spec/template/spec/containers/1/resources
+        # native sidecars (initContainers with restartPolicy: Always)
+        # - /spec/template/spec/initContainers/0/resources
+        # mesh proxy resource annotations written with proxyAnnotations
+        # (internal/recommender ProxyAnnotationKeys)
+        - /spec/template/metadata/annotations/sidecar.istio.io~1proxyCPU
+        - /spec/template/metadata/annotations/sidecar.istio.io~1proxyMemory
+        - /spec/template/metadata/annotations/sidecar.istio.io~1proxyCPULimit
+        - /spec/template/metadata/annotations/sidecar.istio.io~1proxyMemoryLimit
+        - /spec/template/metadata/annotations/config.linkerd.io~1proxy-cpu-request
+        - /spec/template/metadata/annotations/config.linkerd.io~1proxy-memory-request
+        - /spec/template/metadata/annotations/config.linkerd.io~1proxy-cpu-limit
+        - /spec/template/metadata/annotations/config.linkerd.io~1proxy-memory-limit
+        # the engine's state stamps
+        - /spec/template/metadata/annotations/tailor.k8s-tailor.dev~1last-applied
+        - /metadata/annotations/tailor.k8s-tailor.dev~1oom-floor
+    - target:
+        group: serving.knative.dev
+        kind: Service
+      paths:
+        - /spec/template/spec/containers/0/resources
+        - /spec/template/metadata/annotations/tailor.k8s-tailor.dev~1last-applied

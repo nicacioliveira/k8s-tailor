@@ -1,0 +1,19 @@
+# Keep the build context clean — nothing here is needed to build the images and
+# some of it must never enter one (local dev config, VCS metadata, deps that are
+# reinstalled/rebuilt in the image).
+.git
+.gitignore
+.env
+.env.*
+!env.example
+**/node_modules
+web/dist
+mcp/dist
+*.log
+*.tgz
+chart/charts
+deploy
+docs
+Makefile
+LICENSE
+*.md

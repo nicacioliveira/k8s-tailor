@@ -1,0 +1,727 @@
+{
+  "__inputs": [
+    {
+      "name": "datasource",
+      "label": "Prometheus / VictoriaMetrics",
+      "description": "The datasource scraping the k8s-tailor engine (/metrics, job=tailor) and the kubelet resource metrics (job=kubelet-resource).",
+      "type": "datasource",
+      "pluginId": "prometheus"
+    }
+  ],
+  "title": "K8s Tailor — fit, waste, headroom & forecast",
+  "description": "Rightsizing overview for K8s Tailor. Reserved vs recommended vs usage (fit), reclaimable waste, the headroom-breach validation SLI, memory forecast, and actuation activity. Import and pick the datasource that scrapes the tailor engine. Recommendation gauges are taken with max by (namespace, workload, container), so several engine replicas (or a Prometheus scraping every pod through the ServiceMonitor) never multiply them; per-replica counters are summed.",
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "tags": ["k8s-tailor", "rightsizing", "cost"],
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "label": "Datasource"
+      },
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(tailor_recommended_cpu_cores, namespace)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "label": "Namespace"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Savings at a glance",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "Reclaimable $ / week",
+      "description": "Sum of positive weekly waste across in-scope workloads (reserved minus recommended, priced).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "green" } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(max by (namespace, workload, container) (tailor_waste_usd_week{namespace=~\"$namespace\"}) > 0)", "instant": true }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Reclaimable CPU (cores)",
+      "description": "Reserved CPU requests minus recommended, cluster-wide.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 2, "color": { "mode": "fixed", "fixedColor": "blue" } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(max by (namespace, workload, container) (tailor_current_cpu_cores{namespace=~\"$namespace\"})) - sum(max by (namespace, workload, container) (tailor_recommended_cpu_cores{namespace=~\"$namespace\"}))", "instant": true }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Reclaimable memory (GiB)",
+      "description": "Reserved memory requests minus recommended, cluster-wide.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 2, "color": { "mode": "fixed", "fixedColor": "purple" } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "(sum(max by (namespace, workload, container) (tailor_current_mem_bytes{namespace=~\"$namespace\"})) - sum(max by (namespace, workload, container) (tailor_recommended_mem_bytes{namespace=~\"$namespace\"}))) / 1024 / 1024 / 1024", "instant": true }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Workloads breaching headroom (>5%)",
+      "description": "Count of containers where >5% of the window's usage exceeds the recommended request (rec too tight).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }, "color": { "mode": "thresholds" } } },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "targets": [
+        { "refId": "A", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "count((max by (namespace, workload, container) (tailor_headroom_breach_cpu_share{namespace=~\"$namespace\"}) > 0.05) or (max by (namespace, workload, container) (tailor_headroom_breach_mem_share{namespace=~\"$namespace\"}) > 0.05)) or vector(0)", "instant": true }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Fit — CPU (reserved vs recommended vs usage)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 }
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU cores — reserved / recommended / actual usage",
+      "description": "Reserved = live requests. Recommended = what the tailor would set. Usage = measured. The gap between reserved and usage is the waste; recommended hugs usage plus safety margin.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 6 },
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "reserved", "legendFormat": "reserved (requests)", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(max by (namespace, workload, container) (tailor_current_cpu_cores{namespace=~\"$namespace\"}))" },
+        { "refId": "recommended", "legendFormat": "recommended", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(max by (namespace, workload, container) (tailor_recommended_cpu_cores{namespace=~\"$namespace\"}))" },
+        { "refId": "usage", "legendFormat": "actual usage", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\",container!=\"\",container!=\"POD\"}[$__rate_interval]))" },
+        { "refId": "p90", "legendFormat": "decayed p90 (rec basis)", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(max by (namespace, workload, container) (tailor_cpu_p90_cores{namespace=~\"$namespace\"}))" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Fit — Memory",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory bytes — reserved / recommended / actual working set",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "reserved", "legendFormat": "reserved (requests)", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(max by (namespace, workload, container) (tailor_current_mem_bytes{namespace=~\"$namespace\"}))" },
+        { "refId": "recommended", "legendFormat": "recommended", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(max by (namespace, workload, container) (tailor_recommended_mem_bytes{namespace=~\"$namespace\"}))" },
+        { "refId": "usage", "legendFormat": "actual working set", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(container_memory_working_set_bytes{namespace=~\"$namespace\",container!=\"\",container!=\"POD\"})" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Headroom breach (validation SLI)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Headroom breach — % of window usage above the recommended request",
+      "description": "share_gt_over_time SLI. ~0 = the recommendation safely covers usage. High = the rec is too tight (throttle / OOM risk).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 26 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "custom": { "fillOpacity": 5, "lineWidth": 1, "showPoints": "never" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 0.05 }, { "color": "red", "value": 0.2 } ] } } },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "cpu", "legendFormat": "cpu · {{namespace}}/{{workload}}/{{container}}", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max by (namespace, workload, container) (tailor_headroom_breach_cpu_share{namespace=~\"$namespace\"}) > 0" },
+        { "refId": "mem", "legendFormat": "mem · {{namespace}}/{{workload}}/{{container}}", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "max by (namespace, workload, container) (tailor_headroom_breach_mem_share{namespace=~\"$namespace\"}) > 0" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Forecast & actuation",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Memory 24h forecast vs recommended (predict_linear)",
+      "description": "Live predict_linear over the last 6h projected 24h ahead, per namespace, next to the recommended memory. A forecast above the recommendation suggests a growing footprint.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "fillOpacity": 0, "lineWidth": 2, "showPoints": "never" } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "forecast", "legendFormat": "forecast +24h · {{namespace}}", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "clamp_min(predict_linear(sum by (namespace) (container_memory_working_set_bytes{namespace=~\"$namespace\",container!=\"\",container!=\"POD\"})[6h:5m], 24*3600), 0)" },
+        { "refId": "recommended", "legendFormat": "recommended · {{namespace}}", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum by (namespace) (max by (namespace, workload, container) (tailor_recommended_mem_bytes{namespace=~\"$namespace\"}))" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Actuations applied (webhook mutations / min)",
+      "description": "Rate of resource mutations the tailor applied.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 20, "lineWidth": 1, "showPoints": "never", "drawStyle": "bars" } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "mutations/min", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "sum(increase(tailor_mutations_total{namespace=~\"$namespace\"}[$__rate_interval]))" }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Top reclaimable workloads",
+      "description": "Highest weekly waste. Positive = reclaimable; negative = the workload needs more than it reserves.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 43 },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "waste $/week", "desc": true } ] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto" } }, "overrides": [ { "matcher": { "id": "byName", "options": "Value" }, "properties": [ { "id": "displayName", "value": "waste $/week" }, { "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 } ] } ] },
+      "targets": [
+        { "refId": "A", "format": "table", "instant": true, "datasource": { "type": "prometheus", "uid": "${datasource}" }, "expr": "topk(25, max by (namespace, workload, container) (tailor_waste_usd_week{namespace=~\"$namespace\"}))" }
+      ],
+      "transformations": [
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true }, "renameByName": { "namespace": "namespace", "workload": "workload", "container": "container" } } }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Engine health (actuation & refresh)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Resizes applied (24h)",
+      "description": "In-place resizes + template rollouts + ksvc patches the engine applied in the last 24h.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 54
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(tailor_resizes_total{result=\"applied\"}[24h])) or vector(0)",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Resizes failed (24h)",
+      "description": "Actuations the API server rejected in the last 24h (see Warning Events ResizeFailed/RolloutFailed).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 54
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(tailor_resizes_total{result=\"failed\"}[24h])) or vector(0)",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Pods with Infeasible resize",
+      "description": "Running pods whose last in-place resize the node can never fit (PodResizePending/Infeasible).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 54
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(sum by (pod) (tailor_pods_resize_state{state=~\".*Infeasible.*\"})) or vector(0)",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Actuating leader",
+      "description": "Replicas currently holding the actuation Lease (must be exactly 1 while not paused). tailor_leader is one series per engine pod (the bundled vmsingle scrapes each replica by pod discovery), so the sum counts leaders.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 54
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(tailor_leader)",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Resizes by method / result",
+      "description": "Rate of actuation attempts (inplace | rollout | ksvc) by result.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 58
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "drawStyle": "bars"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{mode}} {{result}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (mode, result) (increase(tailor_resizes_total[$__rate_interval]))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Held back, by reason",
+      "description": "Reconcile evaluations that wanted to act but were held back (per tick per pod/container): cooldown, resize_pending, guaranteed_qos, pdb_blocked, failure_backoff, patch_failed.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 58
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{reason}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (reason) (rate(tailor_resize_skipped_total[$__rate_interval]))"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Recommendations by status",
+      "description": "Container recommendations: learning (thin data), oom_risk, underprovisioned, overprovisioned, rightsized (±15%).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 66
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{status}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (status) (tailor_recommendations)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Workloads by mode",
+      "description": "Observed workloads by effective mode (only InPlace/Both/Webhook actuate).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 66
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{mode}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (mode) (tailor_workloads)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Refresh latency",
+      "description": "Recommender refresh duration (p50/p95) and failures.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 74
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(tailor_refresh_duration_seconds_bucket[$__rate_interval])))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(tailor_refresh_duration_seconds_bucket[$__rate_interval])))"
+        },
+        {
+          "refId": "C",
+          "legendFormat": "age of last good refresh (stalest replica)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - min(tailor_last_refresh_success_timestamp_seconds)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Backend query errors",
+      "description": "Failed queries to VictoriaMetrics/Prometheus (usage) and ClickHouse (decision store).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 74
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "drawStyle": "bars"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{backend}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (backend) (increase(tailor_query_errors_total[$__rate_interval]))"
+        }
+      ]
+    }
+  ]
+}

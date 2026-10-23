@@ -1,0 +1,142 @@
+{{- if and .Values.clickhouse.enabled (not .Values.clickhouse.auth.existingSecret) }}
+{{- $secretName := include "tailor.chSecretName" . }}
+# ClickHouse password — read by BOTH the CH bootstrap and the engine.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ include "tailor.namespace" . }}
+  annotations:
+    # The data dir on the PVC outlives the release; so must its password.
+    helm.sh/resource-policy: keep
+type: Opaque
+stringData:
+  {{ .Values.clickhouse.auth.passwordKey | default "password" }}: {{ include "tailor.secretValue" (dict "ns" (include "tailor.namespace" .) "name" $secretName "key" (.Values.clickhouse.auth.passwordKey | default "password") "value" .Values.clickhouse.auth.password "what" "clickhouse.auth" "ctx" $) | quote }}
+---
+{{- end }}
+{{- if .Values.clickhouse.enabled }}
+# Single-node ClickHouse — durable store for applied decisions (and future
+# telemetry / ML feature tables). Plain StatefulSet on the OFFICIAL
+# clickhouse/clickhouse-server image: no operator, no Keeper (a lone
+# non-replicated node needs neither). Node-safe by construction — a hard memory
+# limit plus a config.d cap (max_server_memory_usage_to_ram_ratio) mean it can
+# never starve the node, and it serves no request path. The app user + database
+# are bootstrapped by the image entrypoint on first boot; the engine fully
+# qualifies every object as <db>.<table>, so schema creation is idempotent.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-tailor-clickhouse-config
+  namespace: {{ include "tailor.namespace" . }}
+data:
+  10-node-safe.xml: |
+    <clickhouse>
+      <!-- The one knob that matters for node safety: cap CH memory to a fraction
+           of the container limit. Leave pool sizes at CH defaults — shrinking
+           background_pool_size breaks the mutation-pool invariant and CH refuses
+           to start (BAD_ARGUMENTS). -->
+      <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
+      <mark_cache_size>268435456</mark_cache_size>
+      <max_concurrent_queries>32</max_concurrent_queries>
+      <logger><level>warning</level></logger>
+    </clickhouse>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tailor-clickhouse
+  namespace: {{ include "tailor.namespace" . }}
+  labels: { app: k8s-tailor-clickhouse }
+spec:
+  type: ClusterIP
+  selector: { app: k8s-tailor-clickhouse }
+  ports:
+    - { name: http, port: 8123, targetPort: 8123 }
+    - { name: native, port: 9000, targetPort: 9000 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: k8s-tailor-clickhouse
+  namespace: {{ include "tailor.namespace" . }}
+spec:
+  serviceName: k8s-tailor-clickhouse
+  replicas: 1
+  selector:
+    matchLabels: { app: k8s-tailor-clickhouse }
+  template:
+    metadata:
+      labels: { app: k8s-tailor-clickhouse }
+    spec:
+      {{- include "tailor.imagePullSecrets" . | nindent 6 }}
+      # Run AS the clickhouse user (uid/gid 101). ClickHouse refuses to start when
+      # the process user differs from the data-dir owner (error 430); matching
+      # both to 101 is the canonical fix. fsGroup fixes PVC group ownership.
+      # (clickhouse.podSecurityContext / clickhouse.securityContext)
+      {{- with .Values.clickhouse.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: clickhouse
+          image: {{ include "tailor.image" (dict "img" .Values.clickhouse.image "ctx" $) }}
+          imagePullPolicy: {{ .Values.clickhouse.imagePullPolicy | default "IfNotPresent" }}
+          {{- with .Values.clickhouse.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - { name: http, containerPort: 8123 }
+            - { name: native, containerPort: 9000 }
+          env:
+            - { name: CLICKHOUSE_USER, value: {{ .Values.clickhouse.auth.username | quote }} }
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tailor.chSecretName" . }}
+                  key: {{ .Values.clickhouse.auth.passwordKey | default "password" }}
+            - { name: CLICKHOUSE_DB, value: {{ .Values.clickhouse.auth.database | quote }} }
+            # Let the bootstrapped user run DDL/DML (CREATE DATABASE/TABLE, INSERT).
+            - { name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT, value: "1" }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/clickhouse }
+            - { name: config, mountPath: /etc/clickhouse-server/config.d/10-node-safe.xml, subPath: 10-node-safe.xml }
+            # Read-only rootfs: the entrypoint writes users.d/default-user.xml;
+            # CH logs to /var/log/clickhouse-server.
+            - { name: users-d, mountPath: /etc/clickhouse-server/users.d }
+            - { name: logs, mountPath: /var/log/clickhouse-server }
+            - { name: tmp, mountPath: /tmp }
+          # startupProbe gates liveness: CH has up to ~150s to come up on first
+          # boot without liveness killing it mid-init. Once it passes, liveness
+          # takes over. readiness controls Service membership.
+          startupProbe:
+            httpGet: { path: /ping, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /ping, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /ping, port: http }
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.clickhouse.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: k8s-tailor-clickhouse-config
+        - { name: users-d, emptyDir: {} }
+        - { name: logs, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.clickhouse.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.clickhouse.storage }}
+{{- end }}

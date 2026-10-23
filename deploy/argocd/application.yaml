@@ -1,0 +1,69 @@
+# ArgoCD Application for K8s Tailor - a platform component deployed per cluster.
+# Adjust repoURL, project and destination for your environment.
+#
+# Prod notes baked into the values below:
+#   - images pinned to the GHCR tags the repo's CI publishes (pin a sha, not latest)
+#   - the MCP is Bearer-gated; the token comes from an External-Secrets-managed
+#     Secret (mcp.auth.existingSecret), never inline
+#   - the engine write API Bearer (tailor.apiAuth) comes from the same ESO Secret
+#   - system namespaces + the release namespace are excluded by the chart
+#
+# This Application installs K8s Tailor itself. For the Applications of the
+# workloads the engine resizes through their templates (apply: Rollout,
+# InPlacePreferred fallback, ksvc, proxyAnnotations), add the ignoreDifferences
+# block + RespectIgnoreDifferences=true of workload-application.yaml, or a sync
+# reverts the engine's values and rolls the pods.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: k8s-tailor
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default # adjust to your ArgoCD AppProject
+  source:
+    repoURL: https://github.com/nicacioliveira/k8s-tailor
+    targetRevision: main # PIN a tag / commit sha for prod, not a moving branch
+    path: chart
+    helm:
+      values: |
+        # Namespace = destination.namespace (the chart uses the release namespace).
+        # GitOps renders with `helm template` (no lookup): every credential comes
+        # from ESO, and a forgotten one fails the render instead of rotating.
+        secretGeneration:
+          failWithoutLookup: true
+        tailor:
+          image:
+            repository: ghcr.io/nicacioliveira/k8s-tailor
+            tag: v0.1.0                                    # pin a released tag (or digest: sha256:...)
+          imagePullPolicy: IfNotPresent
+          apiAuth:                                         # engine write API Bearer (shared with the MCP)
+            existingSecret: k8s-tailor
+            secretKey: api-token
+        clickhouse:
+          auth:                                            # no chart default; ESO-owned (helm template can't lookup)
+            existingSecret: k8s-tailor
+            passwordKey: clickhouse-password
+        mcp:
+          image:
+            repository: ghcr.io/nicacioliveira/k8s-tailor-mcp
+            tag: v0.1.0                                    # pin a released tag (or digest)
+          auth:
+            enabled: true
+            token: ""                                      # unset — ESO owns it
+            existingSecret: k8s-tailor                     # one Secret (externalsecret.yaml)
+            secretKey: mcp-token
+        # Reuse the fleet stores instead of bundling, if you prefer:
+        #   clickhouse.enabled: false / victoria-metrics-single.enabled: false
+        #   + tailor.env.CH_URL / VM_URL pointing at them
+  destination:
+    server: https://kubernetes.default.svc # or the target cluster's API
+    namespace: k8s-tailor
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true # CRDs + large manifests

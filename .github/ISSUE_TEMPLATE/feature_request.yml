@@ -1,0 +1,61 @@
+name: Feature request
+description: Propose an improvement or a new capability.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security issues:** do not file them here, see
+        [SECURITY.md](https://github.com/nicacioliveira/k8s-tailor/blob/master/SECURITY.md).
+
+        This is a small, pre-1.0, single-maintainer project. Check
+        [docs/ROADMAP.md](https://github.com/nicacioliveira/k8s-tailor/blob/master/docs/ROADMAP.md)
+        for open decisions before proposing something.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you would like to see. Alternatives you considered are welcome.
+    validations:
+      required: true
+  - type: input
+    id: k8s-version
+    attributes:
+      label: Kubernetes version
+      description: Where this would be used.
+      placeholder: v1.34.1
+    validations:
+      required: false
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution
+      description: For example k3s, EKS, GKE, AKS, OpenShift, kubeadm.
+    validations:
+      required: false
+  - type: input
+    id: cni
+    attributes:
+      label: CNI
+    validations:
+      required: false
+  - type: input
+    id: mesh
+    attributes:
+      label: Service mesh
+      description: Istio, Linkerd or none.
+    validations:
+      required: false
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to open a pull request for this.

@@ -1,0 +1,23 @@
+/* Dashboard stylesheet: Tailwind v4 + the project's design tokens (see ds/NOTICE).
+ * Everything visual comes from semantic tokens; components never use raw colours. */
+@import "tailwindcss";
+@import "./ds/tailwind.css";
+@import "./ds/base.css";
+@import "./ds/fonts.css";
+
+@source "./";
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    min-height: 100dvh;
+  }
+  code,
+  pre,
+  kbd {
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 0.8125rem;
+  }
+}

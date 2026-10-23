@@ -1,0 +1,77 @@
+{{- if .Values.crds.install }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  {{- include "tailor.crd.meta" . | nindent 2 }}
+  name: tailorgroups.tailor.k8s-tailor.dev
+spec:
+  group: tailor.k8s-tailor.dev
+  scope: Cluster
+  names:
+    kind: TailorGroup
+    listKind: TailorGroupList
+    plural: tailorgroups
+    singular: tailorgroup
+    shortNames: ["tgrp"]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              description: >-
+                Collapse many workloads that share a label into ONE logical unit,
+                so a Knative service with dozens of daily revisions is a single
+                row (not one-per-revision) and its usage aggregates. Without any
+                TailorGroup, a built-in rule groups Knative revisions by
+                serving.knative.dev/service with ksvc actuation.
+              required: ["groupBy"]
+              properties:
+                groupBy:
+                  type: string
+                  description: Label key whose value defines the group (e.g. serving.knative.dev/service).
+                namespaces:
+                  type: array
+                  items: { type: string }
+                  description: Namespace globs this rule applies to (empty = all).
+                actuation:
+                  type: string
+                  enum: ["ksvc", "direct", "webhook"]
+                  default: ksvc
+                  description: >-
+                    How the group is actuated. ksvc = patch the Knative Service
+                    (immutable revisions → new revision). direct = patch each
+                    member controller. webhook = right-size pods at creation
+                    (for arbitrary CRs that mint pods and can't be patched).
+                cohort:
+                  type: object
+                  description: >-
+                    Restrict which "generation" of pods in the group counts toward
+                    usage. Generic — works for any controller that stamps a
+                    generation label (Knative revision, Deployment pod-template-hash,
+                    Argo Rollouts hash, StatefulSet controller-revision-hash).
+                  properties:
+                    by:
+                      type: string
+                      description: The generation label (e.g. serving.knative.dev/revision).
+                    select:
+                      type: string
+                      enum: ["all", "latest", "activeByTraffic"]
+                      default: all
+                      description: >-
+                        all = pool every generation (default). latest = only the
+                        newest generation (by pod creation time) counts, so idle
+                        pods of a superseded generation don't dilute the rec.
+                        activeByTraffic = only Knative revisions currently serving
+                        traffic (ksvc status.traffic) count — handles canaries.
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+      additionalPrinterColumns:
+        - { name: GroupBy, type: string, jsonPath: .spec.groupBy }
+        - { name: Actuation, type: string, jsonPath: .spec.actuation }
+{{- end }}

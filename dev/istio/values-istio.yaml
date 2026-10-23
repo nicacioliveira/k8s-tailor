@@ -1,0 +1,16 @@
+# Overrides on top of dev/k3s/values-dev.yaml for the k3d cluster `tailor-istio`.
+# Usage: helm upgrade --install ... -f dev/k3s/values-dev.yaml -f dev/istio/values-istio.yaml
+tailor:
+  # Webhook opt-in list. istio-system and kube-system are listed ON PURPOSE so that
+  # scenario 6 can prove the engine still never touches them (they are excluded by
+  # EXCLUDE_NAMESPACES / the always-excluded set even when the webhook selector matches).
+  actuateNamespaces: "mesh-demo,istio-system,kube-system"
+  webhook:
+    enabled: true
+    # configurationName / reinvocationPolicy keep the chart defaults (zz-k8s-tailor / IfNeeded).
+  # Open write API (local dev only) so the test script can POST policies if needed.
+  apiAuth:
+    enabled: false
+mcp:
+  # The dashboard is not needed here; saves CPU on a slow Docker VM.
+  enabled: false

@@ -1,0 +1,25 @@
+{{- if and .Values.tailor.enabled .Values.serviceMonitor.enabled }}
+# Prometheus Operator scrape of the engine's /metrics (tailor_* decision and
+# operational metrics). With networkPolicy.enabled, also allow the Prometheus
+# pods via networkPolicy.metricsFrom.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: k8s-tailor
+  namespace: {{ include "tailor.namespace" . }}
+  labels:
+    app: k8s-tailor
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels: { app: k8s-tailor }
+  namespaceSelector:
+    matchNames: [{{ include "tailor.namespace" . | quote }}]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval | default "30s" }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout | default "10s" }}
+{{- end }}

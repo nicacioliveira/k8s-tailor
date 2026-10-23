@@ -1,0 +1,51 @@
+# DEV values for the k3d cluster `tailor-dev` (override chart/values.yaml).
+# Goal: minimal footprint and fast convergence of the recommender.
+
+victoria-metrics-single:
+  server:
+    retentionPeriod: 2d
+    persistentVolume:
+      size: 2Gi
+    resources:
+      requests: { cpu: 50m, memory: 96Mi }
+      limits: { memory: 256Mi }
+    # Keeps the chart's scrape (kubelet /metrics/resource via apiserver proxy ->
+    # container_cpu_usage_seconds_total + container_memory_working_set_bytes, and
+    # tailor_*). That is exactly what the engine queries; on k3s the embedded
+    # kubelet exposes these series, so no extra cAdvisor/KSM is needed.
+    # 10s (instead of 5s) reduces CPU/disk without delaying MIN_SAMPLES much.
+    scrape:
+      config:
+        global:
+          scrape_interval: 10s
+
+clickhouse:
+  storage: 1Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }
+
+tailor:
+  # Local images (k3d image import in up.sh, which also passes --set
+  # tailor.image/mcp.image with $IMAGE:$TAG). The chart uses GHCR v<appVersion> by default.
+  image: { repository: k8s-tailor, tag: dev }
+  env:
+    MIN_SAMPLES: "2"        # the engine samples at a fixed 300s (stepSec): 2 points = ~10min of history (the chart default is 288 = one full daily cycle)
+    REFRESH_EVERY: 10s      # short reconciler cycle for the smoke test
+    WINDOW: 1h
+    HALF_LIFE: 10m
+    CH_RETENTION_DAYS: "7"
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+mcp:
+  image: { repository: k8s-tailor-mcp, tag: dev }
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  # Local dev: no nginx sidecar/Bearer (access only via port-forward). Without
+  # allowUnauthenticated, Bun requires MCP_API_TOKEN and refuses to start open.
+  auth:
+    enabled: false
+    allowUnauthenticated: true

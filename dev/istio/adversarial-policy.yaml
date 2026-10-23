@@ -1,0 +1,9 @@
+# Scenario 6: a policy that tries to claim EVERY namespace (including istio-system / kube-system)
+# with the most aggressive actuation. The engine must still never touch the excluded namespaces.
+apiVersion: tailor.k8s-tailor.dev/v1alpha1
+kind: TailorPolicy
+metadata: { name: everything }
+spec:
+  priority: 1   # lowest: only claims namespaces that no other policy matches
+  mode: Both
+  selector: { namespaces: ["*"] }

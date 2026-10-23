@@ -1,0 +1,35 @@
+# Opt-in overlay for provisioners that ignore fsGroup (hostPath-type PVs, some local
+# provisioners and NFS exports): a volume written as root by an earlier install
+# stays root-owned and the non-root vmsingle (uid 65534) cannot write to it.
+#
+#   helm upgrade --install k8s-tailor chart -f chart/values-vmsingle-chown.yaml ...
+#
+# The victoria-metrics-single subchart takes `server.initContainers` as a raw list
+# and has no switch for this, so the opt-in is an overlay rather than a boolean in
+# values.yaml. The init container runs ONCE per pod start, as root, with every
+# capability dropped except CHOWN, a read-only root filesystem and no privilege
+# escalation; it only changes the owner of the volume. If the volume holds files
+# of a third uid with mode 0700, also add DAC_OVERRIDE. Remove the overlay once the
+# volume is owned by 65534; the chown is idempotent and cheap but needs root.
+victoria-metrics-single:
+  server:
+    initContainers:
+      - name: chown-data
+        image: busybox:1.37.0
+        imagePullPolicy: IfNotPresent
+        command: ["chown", "-R", "65534:65534", "/storage"]
+        securityContext:
+          runAsUser: 0
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+            add: ["CHOWN"]
+          seccompProfile: { type: RuntimeDefault }
+        resources:
+          requests: { cpu: 10m, memory: 16Mi }
+          limits: { memory: 64Mi }
+        volumeMounts:
+          - name: server-volume
+            mountPath: /storage

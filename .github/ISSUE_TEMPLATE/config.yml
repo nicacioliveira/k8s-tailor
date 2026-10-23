@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/nicacioliveira/k8s-tailor/security/advisories/new
+    about: Do not open a public issue for a vulnerability. See SECURITY.md.
+  - name: Known issues
+    url: https://github.com/nicacioliveira/k8s-tailor/blob/master/docs/KNOWN-ISSUES.md
+    about: Check whether the problem is already documented.
+  - name: Troubleshooting
+    url: https://github.com/nicacioliveira/k8s-tailor/blob/master/docs/TROUBLESHOOTING.md
+    about: Symptoms and causes for common installation and runtime problems.

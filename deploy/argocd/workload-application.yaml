@@ -1,0 +1,67 @@
+# Argo CD Application for YOUR workloads (not for K8s Tailor itself) when the
+# engine may patch their controller templates: `apply: Rollout`,
+# `InPlacePreferred` falling back to a rollout, Knative Services, or
+# `proxyAnnotations`. Without this, every sync writes the Git values back into
+# the template, which rolls the pods, and the engine resizes again after its
+# cooldown: a loop of rollouts. In-place resizes (`apply: InPlace`) never touch
+# the template and need none of this.
+#
+# Two parts are needed (Argo CD docs, "Diffing Customization" and "Sync Options"):
+#   - ignoreDifferences: the fields the engine owns do not make the app OutOfSync;
+#   - RespectIgnoreDifferences=true: a sync also leaves them alone (Argo CD
+#     pre-patches the desired state with the live values). It only works on
+#     resources that already exist; the first creation applies Git as is.
+# Argo CD evaluates each jqPathExpression as a deletion path (del(<expr>)).
+#
+# The same rules can be set once for every Application in argocd-cm, e.g.
+#   resource.customizations.ignoreDifferences.apps_Deployment: |
+#     jqPathExpressions: [ ...same list... ]
+# (RespectIgnoreDifferences is still a per-Application sync option.)
+#
+# Trade-off: Argo CD no longer reports or reverts manual changes to these fields.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: portal # your application
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://git.example.com/platform/portal.git
+    targetRevision: main
+    path: deploy
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: portal
+  ignoreDifferences:
+    # Deployments, StatefulSets and DaemonSets: container resources (native
+    # sidecars are initContainers), the mesh proxy resource annotations the
+    # engine writes with proxyAnnotations (internal/recommender
+    # ProxyAnnotationKeys), and the engine's state stamps.
+    - group: apps
+      kind: Deployment
+      jqPathExpressions: &workloadPaths
+        - .spec.template.spec.containers[].resources
+        - .spec.template.spec.initContainers[]?.resources
+        - .spec.template.metadata.annotations["sidecar.istio.io/proxyCPU", "sidecar.istio.io/proxyMemory", "sidecar.istio.io/proxyCPULimit", "sidecar.istio.io/proxyMemoryLimit"]
+        - .spec.template.metadata.annotations["config.linkerd.io/proxy-cpu-request", "config.linkerd.io/proxy-memory-request", "config.linkerd.io/proxy-cpu-limit", "config.linkerd.io/proxy-memory-limit"]
+        - .spec.template.metadata.annotations["tailor.k8s-tailor.dev/last-applied"]
+        - .metadata.annotations["tailor.k8s-tailor.dev/oom-floor"]
+    - group: apps
+      kind: StatefulSet
+      jqPathExpressions: *workloadPaths
+    - group: apps
+      kind: DaemonSet
+      jqPathExpressions: *workloadPaths
+    # Knative Services: the engine resizes through the ksvc template.
+    - group: serving.knative.dev
+      kind: Service
+      jqPathExpressions:
+        - .spec.template.spec.containers[].resources
+        - .spec.template.metadata.annotations["tailor.k8s-tailor.dev/last-applied"]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - RespectIgnoreDifferences=true

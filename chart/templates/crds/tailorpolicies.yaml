@@ -1,0 +1,223 @@
+{{- if .Values.crds.install }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  {{- include "tailor.crd.meta" . | nindent 2 }}
+  name: tailorpolicies.tailor.k8s-tailor.dev
+spec:
+  group: tailor.k8s-tailor.dev
+  scope: Cluster
+  names:
+    kind: TailorPolicy
+    listKind: TailorPolicyList
+    plural: tailorpolicies
+    singular: tailorpolicy
+    shortNames: ["rsp"]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              description: A rightsizing profile scoped to a group of workloads.
+              properties:
+                priority:
+                  type: integer
+                  default: 0
+                  minimum: -10000
+                  maximum: 10000
+                  description: Highest priority wins when multiple policies match.
+                mode:
+                  type: string
+                  enum: ["Off", "Recommend", "Webhook", "InPlace", "Both"]
+                  default: Recommend
+                profileRef:
+                  type: string
+                  description: Name of a TailorProfile to use as the base (inline fields override it).
+                apply:
+                  type: string
+                  enum: ["InPlace", "Rollout", "InPlacePreferred"]
+                  default: InPlace
+                  description: Actuation method. InPlace resizes running pods; Rollout patches the template and lets the native updateStrategy roll (PDB/ordering respected); InPlacePreferred falls back to a rollout when a change needs a restart.
+                halfLife:
+                  type: string
+                  pattern: {{ include "tailor.crd.durationPattern" . }}
+                  description: Decay half-life for the weighted quantile (e.g. 24h, 3d). Shorter reacts faster.
+                season:
+                  type: string
+                  enum: ["daily", "weekly", "both", "off"]
+                  default: daily
+                  description: Seasonal forecast basis — hour-of-day, hour-of-week, the higher of both, or disabled.
+                allowExceedLimit:
+                  type: boolean
+                  default: false
+                  description: Allow the recommendation to grow requests/limits ABOVE the currently-set limit. Off keeps workloads from ballooning past their declared ceiling (OOMKills then surface as "needs a higher limit" instead of silently growing).
+                direction:
+                  type: string
+                  enum: ["Both", "Down", "Up"]
+                  default: Both
+                  description: Which way actuation may move a resource. Down = shrink-only (reclaim waste, NEVER raise — most conservative savings posture; no risk of scheduling churn or crossing a ceiling). Up = grow-only (only protect under-provisioned workloads, never reclaim). Both = unrestricted.
+                autoQuantile:
+                  type: boolean
+                  description: Opt-in. When true, the CPU quantile is raised to 0.95 for a container whose burstiness index (p99 / p90 of the CPU series over the window) reaches burstThreshold. The index and the reason are always exposed in the recommendation signals. Unset = the engine default (AUTO_QUANTILE, false).
+                burstThreshold:
+                  type: number
+                  exclusiveMinimum: true
+                  minimum: 1
+                  maximum: 1000
+                  description: Burstiness index (p99 / p90) at which autoQuantile raises the CPU quantile. Unset = the engine default (BURST_THRESHOLD, 3). Measured on the backtest scenarios - bursty 6.5-9.0, heterogeneous about 1.8, diurnal about 1.2.
+                guaranteed:
+                  type: string
+                  enum: ["skip", "resizeBoth"]
+                  default: skip
+                  description: What to do with a container whose request equals its limit for CPU and memory (a Guaranteed pod). skip leaves it alone. resizeBoth (opt-in) resizes request and limit together so the pod stays Guaranteed (QoS is immutable) - CPU grows and shrinks, memory only grows (a memory limit lowered in place is best effort in the kubelet and request == limit near the peak turns a small error into an OOM). Needs in-place resize (Kubernetes 1.33+) for running pods; the webhook applies the same rule at admission.
+                oomOverridesDirection:
+                  type: boolean
+                  default: false
+                  description: When true, a container being OOMKilled may grow its memory even under direction=Down (shrink-only) — recovering health wins over holding the ceiling. Off keeps Down strictly shrink-only.
+                headroomGuard:
+                  type: boolean
+                  default: false
+                  description: When true, floor the request at the (1-headroomThreshold) quantile of the observed window, so at most headroomThreshold of the usage exceeds it (bounded headroom breach). OFF by default — a pure safety opt-in that only ever raises the request.
+                headroomThreshold:
+                  type: number
+                  default: 0.02
+                  minimum: 0
+                  exclusiveMinimum: true
+                  maximum: 0.5
+                  description: Allowed headroom-breach share (0..1) when headroomGuard is on. 0.02 = at most 2% of the window may exceed the request. Only meaningful with headroomGuard=true.
+                seasonGate:
+                  type: object
+                  description: Tuning of the seasonality gate. The seasonal forecast (season daily/weekly/both) is only trusted when the hourly usage profile correlates with itself one season earlier. Weekly seasonality needs a window longer than 7 days (week-lag pairs exist only past one week of history; 14 days cover every hour of the week); with the default 7d window the daily-lag correlation is used as a proxy and a weekly-only pattern is rejected.
+                  properties:
+                    minCorrelation:
+                      type: number
+                      minimum: 0
+                      exclusiveMinimum: true
+                      maximum: 1
+                      description: Minimum lag-one-season Pearson correlation of the hourly profile (engine default 0.5).
+                    minPairs:
+                      type: integer
+                      minimum: 2
+                      maximum: 10000
+                      description: Minimum number of hourly (hour, hour - season) pairs before the correlation is judged (engine default 24 = one day of pairs).
+                schedule:
+                  type: object
+                  description: Actuation windows. Outside them the mode falls back to outsideMode.
+                  properties:
+                    timezone:
+                      type: string
+                      default: UTC
+                    outsideMode:
+                      type: string
+                      enum: ["Off", "Recommend", "Webhook", "InPlace", "Both"]
+                      default: "Off"
+                    windows:
+                      type: array
+                      items:
+                        type: object
+                        x-kubernetes-validations:
+                          - rule: "has(self.start) == has(self.end)"
+                            message: "start and end go together (HH:MM)"
+                        properties:
+                          days:
+                            type: array
+                            items: { type: string, enum: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] }
+                          start: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', description: "HH:MM (recurring daily window)" }
+                          end: { type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', description: "HH:MM" }
+                          from: { type: string, format: date, description: "YYYY-MM-DD (one-off campaign start, e.g. a seasonal event)" }
+                          until: { type: string, format: date, description: "YYYY-MM-DD (campaign end, inclusive)" }
+                selector:
+                  type: object
+                  properties:
+                    namespaces:
+                      type: array
+                      items: { type: string }
+                      description: Namespaces this policy applies to. Empty = any.
+                    matchLabels:
+                      type: object
+                      additionalProperties: { type: string }
+                      description: Workload labels that must all match. Empty = any.
+                cpu:
+                  {{- include "tailor.crd.resSpec" (dict "quantile" 0.9 "margin" 0.15 "limitFactor" 0) | nindent 18 }}
+                memory:
+                  {{- include "tailor.crd.resSpec" (dict "quantile" 0.95 "margin" 0.15 "limitFactor" 1.0) | nindent 18 }}
+                    enforceLimit:
+                      type: boolean
+                      description: Opt-in. When true, a container running WITHOUT a memory limit is given one (request x limitFactor, never below the observed peak x (1+margin)) by the webhook, the in-place resize and the rollout. Off (default) keeps the rule that a memory limit is never introduced. A later layer (policy inline, container rule) may set false to switch it back off.
+                scaleUp:
+                  type: object
+                  properties:
+                    cooldown: { type: string, default: "30s", pattern: {{ include "tailor.crd.durationPattern" . }} }
+                scaleDown:
+                  type: object
+                  properties:
+                    cooldown: { type: string, default: "1h", pattern: {{ include "tailor.crd.durationPattern" . }} }
+                    stabilization: { type: string, default: "15m", pattern: {{ include "tailor.crd.durationPattern" . }} }
+                containers:
+                  type: array
+                  description: Per-container overrides, evaluated in order (first match wins). Injected sidecars (istio-proxy, linkerd-proxy, vault-agent, ... or any container absent from the pod template) default to Recommend with a built-in sidecar profile; a rule with an explicit mode opts them in. Per-container annotations tailor.k8s-tailor.dev/container.<name>.<field> on the workload override these rules.
+                  items:
+                    type: object
+                    required: ["match"]
+                    properties:
+                      match:
+                        type: object
+                        description: Both fields must match when set; at least one is required.
+                        properties:
+                          names:
+                            type: array
+                            items: { type: string }
+                            description: Container-name globs (e.g. istio-proxy, envoy*).
+                          classes:
+                            type: array
+                            items: { type: string, enum: ["app", "injected-sidecar", "native-sidecar"] }
+                            description: Container classes. app = declared by the owner; injected-sidecar = known sidecar name, mesh-injected, or absent from the template; native-sidecar = initContainer with restartPolicy Always declared in the template.
+                        x-kubernetes-validations:
+                          - rule: "has(self.names) || has(self.classes)"
+                            message: "match needs names and/or classes"
+                      exclude:
+                        type: boolean
+                        description: No recommendation and no actuation for matching containers.
+                      mode:
+                        type: string
+                        enum: ["Off", "Recommend", "Webhook", "InPlace", "Both"]
+                        description: Overrides the workload mode for matching containers (required to actuate an injected sidecar).
+                      apply:
+                        type: string
+                        enum: ["InPlace", "Rollout", "InPlacePreferred"]
+                      direction:
+                        type: string
+                        enum: ["Both", "Down", "Up"]
+                      guaranteed:
+                        type: string
+                        enum: ["skip", "resizeBoth"]
+                        description: Overrides the workload's guaranteed setting for matching containers (see TailorPolicy spec.guaranteed).
+                      profileRef:
+                        type: string
+                        description: TailorProfile whose cpu/memory model sizes matching containers.
+                      proxyAnnotations:
+                        type: boolean
+                        description: For a mesh proxy injected at admission (absent from the template), the durable/rollout path writes the mesh resource annotations on the pod template (Istio sidecar.istio.io/proxyCPU, proxyMemory, proxyCPULimit, proxyMemoryLimit; Linkerd config.linkerd.io/proxy-*-request|limit) instead of patching a container that does not exist there.
+                      cpu:
+                        {{- include "tailor.crd.resSpec" dict | nindent 24 }}
+                      memory:
+                        {{- include "tailor.crd.resSpec" dict | nindent 24 }}
+                          enforceLimit:
+                            type: boolean
+                            description: Opt-in. When true, a container running WITHOUT a memory limit is given one (request x limitFactor, never below the observed peak x (1+margin)) by the webhook, the in-place resize and the rollout. Off (default) keeps the rule that a memory limit is never introduced. A later layer (policy inline, container rule) may set false to switch it back off.
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+      additionalPrinterColumns:
+        - name: Mode
+          type: string
+          jsonPath: .spec.mode
+        - name: Priority
+          type: integer
+          jsonPath: .spec.priority
+{{- end }}

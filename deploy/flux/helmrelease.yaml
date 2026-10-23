@@ -1,0 +1,52 @@
+# Flux HelmRelease for YOUR workload chart (not for K8s Tailor itself) when the
+# engine may patch the controller templates it renders (`apply: Rollout`,
+# `InPlacePreferred` falling back to a rollout, `proxyAnnotations`).
+#
+# What this covers: with drift detection on, helm-controller compares the
+# cluster with the release manifest and corrects drift; `driftDetection.ignore`
+# (helm.toolkit.fluxcd.io/v2) keeps the fields the engine owns out of that
+# comparison, so they are neither reported nor reverted between upgrades.
+#
+# What it does NOT cover: a Helm UPGRADE (new chart version or changed values)
+# is a three-way merge that writes the chart's rendered resources back, rolls
+# the pods, and the engine resizes again after its cooldown. For a workload
+# under Helm the durable options are `apply: InPlace` (the template is never
+# touched), or not rendering `resources` for the managed containers.
+#
+# Paths are JSON Pointers (RFC 6901): no wildcards, containers by INDEX, and
+# "/" in an annotation key is written "~1". `target` fields accept regular
+# expressions.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: portal # your application
+  namespace: portal
+spec:
+  interval: 10m
+  chart:
+    spec:
+      chart: portal
+      version: "1.x"
+      sourceRef:
+        kind: HelmRepository
+        name: portal
+        namespace: flux-system
+  driftDetection:
+    mode: enabled
+    ignore:
+      - target:
+          group: apps
+          kind: ^(Deployment|StatefulSet|DaemonSet)$
+        paths:
+          - /spec/template/spec/containers/0/resources
+          - /spec/template/spec/containers/1/resources
+          - /spec/template/metadata/annotations/sidecar.istio.io~1proxyCPU
+          - /spec/template/metadata/annotations/sidecar.istio.io~1proxyMemory
+          - /spec/template/metadata/annotations/sidecar.istio.io~1proxyCPULimit
+          - /spec/template/metadata/annotations/sidecar.istio.io~1proxyMemoryLimit
+          - /spec/template/metadata/annotations/config.linkerd.io~1proxy-cpu-request
+          - /spec/template/metadata/annotations/config.linkerd.io~1proxy-memory-request
+          - /spec/template/metadata/annotations/config.linkerd.io~1proxy-cpu-limit
+          - /spec/template/metadata/annotations/config.linkerd.io~1proxy-memory-limit
+          - /spec/template/metadata/annotations/tailor.k8s-tailor.dev~1last-applied
+          - /metadata/annotations/tailor.k8s-tailor.dev~1oom-floor

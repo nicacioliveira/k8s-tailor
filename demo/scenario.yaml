@@ -1,0 +1,169 @@
+# Complete demo: every workload KIND the tailor treats differently, plus
+# PodDisruptionBudgets and a disruptive (RestartContainer) memory resize — so the
+# whole UI (type badges, PDB shields, per-kind strategy, historical charts,
+# groups, savings) shows real, varying behavior.
+#
+#   Deployment  web-a  → PDB maxUnavailable=0 + memory resizePolicy=RestartContainer
+#                        → in-place mem resize is DISRUPTIVE and gets HELD by the PDB
+#                          (CPU still applied). This exercises the PDB guardrail live.
+#   Deployment  web-b  → plain, in-place both cpu+mem
+#   Deployment  api    → plain, in-place both
+#   StatefulSet postgres → PDB minAvailable=1 (0 disruptions allowed), Recommend-only
+#                          (protected critical DB) — identity/volumes preserved
+#   DaemonSet   log-agent → per-node, never evicted
+#   Pod         adhoc     → UNMANAGED (no controller) — in-place only, lost if deleted
+apiVersion: v1
+kind: Namespace
+metadata: { name: apps, labels: { tier: frontend } }
+---
+apiVersion: v1
+kind: Namespace
+metadata: { name: data, labels: { tier: stateful } }
+---
+# --- Deployment web-a: PDB-protected + disruptive memory resize ---------------
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web-a, namespace: apps, labels: { app.kubernetes.io/part-of: apps } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: web-a } }
+  template:
+    metadata: { labels: { app: web-a, app.kubernetes.io/part-of: apps } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          # memory resize restarts the container → disruptive → PDB must allow it
+          resizePolicy:
+            - resourceName: memory
+              restartPolicy: RestartContainer
+            - resourceName: cpu
+              restartPolicy: NotRequired
+          command: ["sh","-c","while true; do t=$(( $(date +%s)+90 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 2 yes>/dev/null; sleep 1; done; t=$(( $(date +%s)+90 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 1 yes>/dev/null; sleep 5; done; done"]
+          resources: { requests: { cpu: "300m", memory: 48Mi } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: web-a-pdb, namespace: apps }
+spec:
+  maxUnavailable: 0            # 0 disruptions allowed → holds the disruptive mem resize
+  selector: { matchLabels: { app: web-a } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web-b, namespace: apps, labels: { app.kubernetes.io/part-of: apps } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: web-b } }
+  template:
+    metadata: { labels: { app: web-b, app.kubernetes.io/part-of: apps } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh","-c","while true; do t=$(( $(date +%s)+120 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 2 yes>/dev/null; sleep 1; done; t=$(( $(date +%s)+120 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 1 yes>/dev/null; sleep 9; done; done"]
+          resources: { requests: { cpu: "800m", memory: 64Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: api, namespace: apps, labels: { app.kubernetes.io/part-of: apps } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: api } }
+  template:
+    metadata: { labels: { app: api, app.kubernetes.io/part-of: apps } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh","-c","while true; do t=$(( $(date +%s)+60 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 1 yes>/dev/null; sleep 1; done; t=$(( $(date +%s)+60 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 1 yes>/dev/null; sleep 3; done; done"]
+          resources: { requests: { cpu: "600m", memory: 64Mi } }
+---
+# --- StatefulSet postgres: protected critical DB, PDB, Recommend-only ----------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: postgres, namespace: data, labels: { tier: database } }
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres, tier: database } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh","-c","while true; do t=$(( $(date +%s)+150 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 1 yes>/dev/null; sleep 2; done; t=$(( $(date +%s)+150 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 1 yes>/dev/null; sleep 6; done; done"]
+          resources: { requests: { cpu: "500m", memory: 256Mi } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: postgres-pdb, namespace: data }
+spec:
+  minAvailable: 1              # 1 replica, 1 required → 0 disruptions allowed
+  selector: { matchLabels: { app: postgres } }
+---
+# --- DaemonSet log-agent: per-node, never evicted -----------------------------
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: log-agent, namespace: apps, labels: { app.kubernetes.io/part-of: apps } }
+spec:
+  selector: { matchLabels: { app: log-agent } }
+  template:
+    metadata: { labels: { app: log-agent, app.kubernetes.io/part-of: apps } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh","-c","while true; do t=$(( $(date +%s)+100 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 1 yes>/dev/null; sleep 4; done; t=$(( $(date +%s)+100 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 1 yes>/dev/null; sleep 8; done; done"]
+          resources: { requests: { cpu: "200m", memory: 32Mi } }
+---
+# --- Bare Pod adhoc: unmanaged (no controller) --------------------------------
+apiVersion: v1
+kind: Pod
+metadata: { name: adhoc, namespace: apps, labels: { app: adhoc } }
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sh","-c","while true; do t=$(( $(date +%s)+70 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 1 yes>/dev/null; sleep 2; done; t=$(( $(date +%s)+70 )); while [ $(date +%s) -lt $t ]; do timeout -s KILL 1 yes>/dev/null; sleep 7; done; done"]
+      resources: { requests: { cpu: "400m", memory: 48Mi } }
+---
+# --- reusable scaling profiles ------------------------------------------------
+apiVersion: tailor.k8s-tailor.dev/v1alpha1
+kind: TailorProfile
+metadata: { name: aggressive }
+spec:
+  cpu: { quantile: 0.8, margin: 0.05, min: "10m" }
+  memory: { quantile: 0.9, margin: 0.1, min: "16Mi" }
+---
+apiVersion: tailor.k8s-tailor.dev/v1alpha1
+kind: TailorProfile
+metadata: { name: conservative }
+spec:
+  cpu: { quantile: 0.99, margin: 0.5, min: "50m" }
+  memory: { quantile: 0.99, margin: 0.5, min: "256Mi" }
+---
+# --- groups (policies) --------------------------------------------------------
+apiVersion: tailor.k8s-tailor.dev/v1alpha1
+kind: TailorPolicy
+metadata: { name: apps }
+spec:
+  priority: 50
+  mode: InPlace
+  apply: InPlacePreferred   # web-a's PDB-blocked disruptive mem resize falls back to a rollout
+  season: both              # daily + weekly seasonality (site traffic pattern)
+  halfLife: 12h             # react a bit faster than the 24h default
+  profileRef: aggressive
+  selector: { namespaces: ["apps"] }
+---
+apiVersion: tailor.k8s-tailor.dev/v1alpha1
+kind: TailorPolicy
+metadata: { name: critical-db }
+spec:
+  priority: 100
+  mode: Recommend           # protected: recommend only, never auto-actuate
+  apply: Rollout            # if ever enabled, roll via the StatefulSet's ordered updateStrategy
+  season: weekly
+  profileRef: conservative
+  selector: { matchLabels: { tier: database } }

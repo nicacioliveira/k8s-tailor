@@ -1,0 +1,96 @@
+{{- if .Values.crds.install }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  {{- include "tailor.crd.meta" . | nindent 2 }}
+  name: tailorprofiles.tailor.k8s-tailor.dev
+spec:
+  group: tailor.k8s-tailor.dev
+  scope: Cluster
+  names:
+    kind: TailorProfile
+    listKind: TailorProfileList
+    plural: tailorprofiles
+    singular: tailorprofile
+    shortNames: ["rsprof"]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              description: A reusable scaling model referenced by TailorPolicy.profileRef.
+              properties:
+                cpu:
+                  {{- include "tailor.crd.resSpec" dict | nindent 18 }}
+                memory:
+                  {{- include "tailor.crd.resSpec" dict | nindent 18 }}
+                    enforceLimit:
+                      type: boolean
+                      description: Opt-in. When true, a container running WITHOUT a memory limit is given one (request x limitFactor, never below the observed peak x (1+margin)) by the webhook, the in-place resize and the rollout. Off (default) keeps the rule that a memory limit is never introduced. A later layer (policy inline, container rule) may set false to switch it back off.
+                scaleUp:
+                  type: object
+                  properties:
+                    cooldown: { type: string, pattern: {{ include "tailor.crd.durationPattern" . }} }
+                scaleDown:
+                  type: object
+                  properties:
+                    cooldown: { type: string, pattern: {{ include "tailor.crd.durationPattern" . }} }
+                    stabilization: { type: string, pattern: {{ include "tailor.crd.durationPattern" . }} }
+                containers:
+                  type: array
+                  description: Per-container overrides, evaluated in order (first match wins). Injected sidecars (istio-proxy, linkerd-proxy, vault-agent, ... or any container absent from the pod template) default to Recommend with a built-in sidecar profile; a rule with an explicit mode opts them in. Per-container annotations tailor.k8s-tailor.dev/container.<name>.<field> on the workload override these rules.
+                  items:
+                    type: object
+                    required: ["match"]
+                    properties:
+                      match:
+                        type: object
+                        description: Both fields must match when set; at least one is required.
+                        properties:
+                          names:
+                            type: array
+                            items: { type: string }
+                            description: Container-name globs (e.g. istio-proxy, envoy*).
+                          classes:
+                            type: array
+                            items: { type: string, enum: ["app", "injected-sidecar", "native-sidecar"] }
+                            description: Container classes. app = declared by the owner; injected-sidecar = known sidecar name, mesh-injected, or absent from the template; native-sidecar = initContainer with restartPolicy Always declared in the template.
+                        x-kubernetes-validations:
+                          - rule: "has(self.names) || has(self.classes)"
+                            message: "match needs names and/or classes"
+                      exclude:
+                        type: boolean
+                        description: No recommendation and no actuation for matching containers.
+                      mode:
+                        type: string
+                        enum: ["Off", "Recommend", "Webhook", "InPlace", "Both"]
+                        description: Overrides the workload mode for matching containers (required to actuate an injected sidecar).
+                      apply:
+                        type: string
+                        enum: ["InPlace", "Rollout", "InPlacePreferred"]
+                      direction:
+                        type: string
+                        enum: ["Both", "Down", "Up"]
+                      guaranteed:
+                        type: string
+                        enum: ["skip", "resizeBoth"]
+                        description: Overrides the workload's guaranteed setting for matching containers (see TailorPolicy spec.guaranteed).
+                      profileRef:
+                        type: string
+                        description: TailorProfile whose cpu/memory model sizes matching containers.
+                      proxyAnnotations:
+                        type: boolean
+                        description: For a mesh proxy injected at admission (absent from the template), the durable/rollout path writes the mesh resource annotations on the pod template (Istio sidecar.istio.io/proxyCPU, proxyMemory, proxyCPULimit, proxyMemoryLimit; Linkerd config.linkerd.io/proxy-*-request|limit) instead of patching a container that does not exist there.
+                      cpu:
+                        {{- include "tailor.crd.resSpec" dict | nindent 24 }}
+                      memory:
+                        {{- include "tailor.crd.resSpec" dict | nindent 24 }}
+                          enforceLimit:
+                            type: boolean
+                            description: Opt-in. When true, a container running WITHOUT a memory limit is given one (request x limitFactor, never below the observed peak x (1+margin)) by the webhook, the in-place resize and the rollout. Off (default) keeps the rule that a memory limit is never introduced. A later layer (policy inline, container rule) may set false to switch it back off.
+{{- end }}

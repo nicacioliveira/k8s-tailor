@@ -1,0 +1,47 @@
+# FAKE OpenAI-compatible LLM for the advisor e2e (no real LLM), inside the cluster.
+# busybox httpd + CGI: POST /cgi-bin/chat/completions returns a fixed, valid JSON
+# (Summary if the prompt contains "summar"/"resum", otherwise Review).
+# Usage: kubectl apply -f dev/k3s/fake-llm.yaml ; helm ... --set tailor.advisor.baseURL=http://fake-llm.e2e-advisor.svc/cgi-bin
+apiVersion: v1
+kind: Namespace
+metadata: { name: e2e-advisor }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: fake-llm, namespace: e2e-advisor }
+data:
+  chat: |
+    #!/bin/sh
+    body=$(head -c "${CONTENT_LENGTH:-0}")
+    echo "fake-llm $REQUEST_METHOD $PATH_INFO" >&2
+    if echo "$body" | grep -qiE 'summar|resum'; then
+      c='{\"overview\":\"FAKE e2e response: workload has request headroom.\",\"verdict\":\"ok\",\"confidence\":\"medium\",\"highlights\":[\"fake-llm: no real analysis\"],\"attention\":[],\"cited_figures\":[],\"omitted\":0}'
+    else
+      c='{\"verdict\":\"ok\",\"confidence\":\"medium\",\"rationale\":\"FAKE e2e response: the recommendation looks consistent with the observed usage.\",\"risks\":[\"fake-llm: no real analysis\"],\"suggested_action\":\"Keep the current recommendation.\",\"cited_figures\":[]}'
+    fi
+    printf 'Content-Type: application/json\r\n\r\n'
+    printf '{"id":"fake-1","object":"chat.completion","model":"fake-model","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"%s"}}],"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20}}' "$c"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: fake-llm, namespace: e2e-advisor }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: fake-llm } }
+  template:
+    metadata: { labels: { app: fake-llm } }
+    spec:
+      containers:
+        - name: httpd
+          image: busybox:1.36
+          command: ["sh","-c","mkdir -p /www/cgi-bin && cp /cfg/chat /www/cgi-bin/chat && chmod +x /www/cgi-bin/chat && exec httpd -f -v -p 80 -h /www"]
+          volumeMounts: [{ name: cfg, mountPath: /cfg }]
+          resources: { requests: { cpu: 10m, memory: 16Mi } }
+      volumes: [{ name: cfg, configMap: { name: fake-llm } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: fake-llm, namespace: e2e-advisor }
+spec:
+  selector: { app: fake-llm }
+  ports: [{ port: 80, targetPort: 80 }]

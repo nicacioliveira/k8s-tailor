@@ -1,0 +1,260 @@
+{{- if .Values.tailor.enabled }}
+{{- $ns := include "tailor.namespace" . }}
+{{- $apiAuth := .Values.tailor.apiAuth | default dict }}
+{{- if and $apiAuth.enabled (not $apiAuth.existingSecret) }}
+{{- $secretName := include "tailor.apiSecretName" . }}
+{{- $key := $apiAuth.secretKey | default "token" }}
+# Bearer token for the engine's MUTATING /api endpoints, shared with the MCP.
+# Generated once and reused on upgrade (lookup); prod/GitOps should point
+# tailor.apiAuth.existingSecret at an ESO-managed Secret instead.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+stringData:
+  {{ $key }}: {{ include "tailor.secretValue" (dict "ns" $ns "name" $secretName "key" $key "value" $apiAuth.token "what" "tailor.apiAuth" "ctx" $) | quote }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tailor
+  namespace: {{ $ns }}
+  labels:
+    app: k8s-tailor
+    {{- include "tailor.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.tailor.replicas | default 1 }}
+  selector:
+    matchLabels:
+      app: k8s-tailor
+  template:
+    metadata:
+      labels:
+        app: k8s-tailor
+      {{- with .Values.tailor.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: k8s-tailor
+      # SIGTERM → stop actuating, release the Lease, drain servers, flush the
+      # decision store (~25s worst case in the engine). Keep >= 30.
+      terminationGracePeriodSeconds: {{ .Values.tailor.terminationGracePeriodSeconds | default 30 }}
+      {{- include "tailor.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.tailor.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: tailor
+          image: {{ include "tailor.image" (dict "img" .Values.tailor.image "ctx" $) }}
+          imagePullPolicy: {{ .Values.tailor.imagePullPolicy }}
+          {{- with .Values.tailor.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: 8080
+              name: http
+            {{- if .Values.tailor.webhook.enabled }}
+            - containerPort: 8443
+              name: webhook
+            {{- end }}
+          env:
+            {{- $chFromSecret := include "tailor.chPasswordFromSecret" . }}
+            {{- range $k, $v := .Values.tailor.env }}
+            {{- if not (or (and (eq $k "CH_PASSWORD") $chFromSecret) (eq $k "EXCLUDE_NAMESPACES")) }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- end }}
+            # Release namespace always first: the Tailor never sizes itself.
+            - name: EXCLUDE_NAMESPACES
+              value: {{ include "tailor.excludeNamespaces" . | quote }}
+            {{- if and (not .Values.tailor.env.VM_URL) (index .Values "victoria-metrics-single").enabled }}
+            - name: VM_URL
+              value: {{ printf "http://k8s-tailor-vmsingle.%s.svc:8428" $ns | quote }}
+            {{- end }}
+            {{- if not (hasKey .Values.tailor.env "VM_JOB") }}
+            # Usage queries only trust series from this scrape job ("" = no filter).
+            - name: VM_JOB
+              value: {{ (hasKey .Values.tailor "vmJob" | ternary .Values.tailor.vmJob "kubelet-resource") | default "" | quote }}
+            {{- end }}
+            {{- if not (hasKey .Values.tailor.env "VM_THROTTLE_JOB") }}
+            # The optional CFS throttling query only trusts this (cAdvisor) job ("" = no filter).
+            - name: VM_THROTTLE_JOB
+              value: {{ (hasKey .Values.tailor "vmThrottleJob" | ternary .Values.tailor.vmThrottleJob "kubelet-cadvisor") | default "" | quote }}
+            {{- end }}
+            {{- $wcache := .Values.tailor.warmCache | default dict }}
+            {{- if not (hasKey .Values.tailor.env "WARM_CACHE") }}
+            - name: WARM_CACHE
+              value: {{ hasKey $wcache "enabled" | ternary $wcache.enabled true | toString | quote }}
+            {{- end }}
+            {{- if not (hasKey .Values.tailor.env "WARM_TTL") }}
+            - name: WARM_TTL
+              value: {{ $wcache.ttl | default "15m" | toString | quote }}
+            {{- end }}
+            {{- if not (hasKey .Values.tailor.env "DISRUPTIVE_MAX_WAIT") }}
+            - name: DISRUPTIVE_MAX_WAIT
+              value: {{ $dis := (.Values.tailor.disruptive | default dict) }}{{ (hasKey $dis "maxWait" | ternary $dis.maxWait "15m") | toString | quote }}
+            {{- end }}
+            {{- if and .Values.tailor.rbac.clusterLookups (not (hasKey .Values.tailor.env "CLUSTER_LOOKUPS")) }}
+            # Cap a memory request at the largest eligible node / the LimitRange max.
+            - name: CLUSTER_LOOKUPS
+              value: "true"
+            {{- end }}
+            {{- if not (hasKey .Values.tailor.env "OOM_MEM_CAP_FACTOR") }}
+            {{- $capf := hasKey .Values.tailor "oomMemCapFactor" | ternary .Values.tailor.oomMemCapFactor 4 }}
+            {{- $growth := .Values.tailor.env.OOM_GROWTH_FACTOR | default "1.5" }}
+            {{- if or (le (float64 $capf) 0.0) (lt (float64 $capf) (float64 $growth)) }}
+            {{- fail (printf "tailor.oomMemCapFactor (%v) must be a number >= OOM_GROWTH_FACTOR (%v)" $capf $growth) }}
+            {{- end }}
+            # Ceiling of the OOM request raise for containers without a memory limit (× peak).
+            - name: OOM_MEM_CAP_FACTOR
+              value: {{ $capf | toString | quote }}
+            {{- end }}
+            {{- if and (not .Values.tailor.env.CH_URL) .Values.clickhouse.enabled }}
+            - name: CH_URL
+              value: {{ printf "http://k8s-tailor-clickhouse.%s.svc:8123" $ns | quote }}
+            {{- end }}
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            {{- if .Values.tailor.leaderElection.enabled }}
+            # Only the holder of this Lease actuates (replicas > 1 safe).
+            - name: LEADER_ELECT
+              value: "true"
+            - name: LEADER_LEASE_NAME
+              value: {{ .Values.tailor.leaderElection.leaseName | default "k8s-tailor-actuator" | quote }}
+            {{- else if gt (int (.Values.tailor.replicas | default 1)) 1 }}
+            {{- fail "tailor.replicas > 1 requires tailor.leaderElection.enabled=true (otherwise every replica actuates)" }}
+            {{- end }}
+            {{- if $apiAuth.enabled }}
+            # Bearer token gating every mutating /api call; fail closed without it.
+            - name: TAILOR_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tailor.apiSecretName" . }}
+                  key: {{ $apiAuth.secretKey | default "token" }}
+            - name: TAILOR_API_AUTH_REQUIRED
+              value: "true"
+            {{- if $apiAuth.protectReads }}
+            # The same token on GET/HEAD /api/* (probes, /metrics and the UI shell stay open).
+            - name: TAILOR_API_PROTECT_READS
+              value: "true"
+            {{- end }}
+            {{- else if $apiAuth.protectReads }}
+            {{- fail "tailor.apiAuth.protectReads=true requires tailor.apiAuth.enabled=true (reads are gated by the same token)" }}
+            {{- end }}
+            {{- with .Values.tailor.allowedHosts }}
+            - name: TAILOR_ALLOWED_HOSTS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- with .Values.tailor.advisor }}
+            {{- if .enabled }}
+            {{- if not .model }}{{ fail "tailor.advisor.model is required when tailor.advisor.enabled=true" }}{{ end }}
+            {{- if not .baseURL }}{{ fail "tailor.advisor.baseURL is required when tailor.advisor.enabled=true" }}{{ end }}
+            # Optional read-only LLM advisor (docs/ADVISOR.md).
+            - { name: ADVISOR_ENABLED, value: "true" }
+            - { name: ADVISOR_BASE_URL, value: {{ .baseURL | quote }} }
+            - { name: ADVISOR_MODEL, value: {{ .model | quote }} }
+            - { name: ADVISOR_ANONYMIZE, value: {{ .anonymize | default false | quote }} }
+            - { name: ADVISOR_LANGUAGE, value: {{ .language | default "en" | quote }} }
+            - { name: ADVISOR_TIMEOUT, value: {{ .timeout | default "30s" | quote }} }
+            - { name: ADVISOR_MAX_CALLS_PER_HOUR, value: {{ .maxCallsPerHour | default 0 | quote }} }
+            - { name: ADVISOR_TOKEN_BUDGET_PER_HOUR, value: {{ .tokenBudgetPerHour | default 0 | quote }} }
+            - { name: ADVISOR_CACHE_TTL, value: {{ .cacheTTL | default "0" | quote }} }
+            - { name: ADVISOR_MAX_TOKENS, value: {{ .maxTokens | default 800 | quote }} }
+            - { name: ADVISOR_RESPONSE_FORMAT, value: {{ .responseFormat | default "json_schema" | quote }} }
+            {{- with .extraHeaders }}
+            - { name: ADVISOR_EXTRA_HEADERS, value: {{ . | quote }} }
+            {{- end }}
+            {{- if .existingSecret }}
+            - name: ADVISOR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret }}
+                  key: {{ .secretKey | default "api-key" }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if $chFromSecret }}
+            # CH_PASSWORD from the same Secret the CH bootstrap reads (never inline).
+            - name: CH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tailor.chSecretName" . }}
+                  key: {{ .Values.clickhouse.auth.passwordKey | default "password" }}
+            {{- end }}
+          {{- if .Values.tailor.webhook.enabled }}
+          volumeMounts:
+            - name: webhook-tls
+              mountPath: /etc/webhook/tls
+              readOnly: true
+          {{- end }}
+          resources:
+            {{- toYaml .Values.tailor.resources | nindent 12 }}
+          {{- with .Values.tailor.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tailor.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- if .Values.tailor.webhook.enabled }}
+      volumes:
+        # Mounted as a directory (no subPath) so a rotated cert reaches the pod;
+        # the engine hot-reloads it.
+        - name: webhook-tls
+          secret:
+            secretName: {{ include "tailor.webhookSecretName" . }}
+            optional: true
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tailor
+  namespace: {{ $ns }}
+  labels:
+    app: k8s-tailor
+    {{- include "tailor.labels" . | nindent 4 }}
+spec:
+  selector:
+    app: k8s-tailor
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+    {{- if .Values.tailor.webhook.enabled }}
+    - port: 8443
+      targetPort: 8443
+      name: webhook
+    {{- end }}
+{{- if and .Values.tailor.pdb.enabled (gt (int (.Values.tailor.replicas | default 1)) 1) }}
+---
+# Keeps one engine serving the API/UI/webhook during voluntary disruptions
+# (node drains). Only with replicas > 1: on one replica it would block drains.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: k8s-tailor
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.tailor.pdb.minAvailable | default 1 }}
+  selector:
+    matchLabels:
+      app: k8s-tailor
+{{- end }}
+{{- end }}

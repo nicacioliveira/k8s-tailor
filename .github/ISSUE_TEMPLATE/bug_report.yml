@@ -1,0 +1,79 @@
+name: Bug report
+description: Something does not work as documented.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security issues:** do not file them here. Report vulnerabilities privately, see
+        [SECURITY.md](https://github.com/nicacioliveira/k8s-tailor/blob/master/SECURITY.md).
+
+        Please check [docs/KNOWN-ISSUES.md](https://github.com/nicacioliveira/k8s-tailor/blob/master/docs/KNOWN-ISSUES.md)
+        and [docs/TROUBLESHOOTING.md](https://github.com/nicacioliveira/k8s-tailor/blob/master/docs/TROUBLESHOOTING.md) first.
+        Remove tokens, hostnames and workload names you consider sensitive before pasting logs.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal manifests, policies and Helm values that trigger it.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: K8s Tailor version
+      description: Chart version and image tag (for example chart 0.2.0, app 0.1.0, or a commit SHA).
+    validations:
+      required: true
+  - type: input
+    id: k8s-version
+    attributes:
+      label: Kubernetes version
+      description: Output of `kubectl version` (server). In-place resize needs 1.33 or newer.
+      placeholder: v1.34.1
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution and node architecture
+      description: For example k3s, k3d, EKS, GKE, AKS, OpenShift, kubeadm; amd64 or arm64; container runtime.
+    validations:
+      required: true
+  - type: input
+    id: cni
+    attributes:
+      label: CNI
+      description: For example Calico, Cilium, Flannel. Say whether NetworkPolicies are enforced.
+    validations:
+      required: false
+  - type: input
+    id: mesh
+    attributes:
+      label: Service mesh
+      description: Istio, Linkerd or none, with version.
+    validations:
+      required: false
+  - type: input
+    id: metrics-source
+    attributes:
+      label: Metrics source
+      description: Bundled VictoriaMetrics, or an external Prometheus-compatible store.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and events
+      description: Engine logs, relevant `kubectl get events`, and the workload's `status`/annotations.
+      render: text
+    validations:
+      required: false

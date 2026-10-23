@@ -1,0 +1,163 @@
+/* Tailwind v4 theme bridge (design tokens).
+ * ONE @theme inline mapping utilities to var(--…). */
+@import "./tokens.css";
+
+@custom-variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
+
+@theme inline {
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-subtle: var(--accent-subtle);
+  --color-background: var(--background);
+  --color-border: var(--border);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-surface: var(--destructive-surface);
+  --color-destructive-text: var(--destructive-text);
+  --color-foreground: var(--foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-surface: var(--info-surface);
+  --color-info-text: var(--info-text);
+  --color-input: var(--input);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-neutral-1: var(--neutral-1);
+  --color-neutral-10: var(--neutral-10);
+  --color-neutral-11: var(--neutral-11);
+  --color-neutral-12: var(--neutral-12);
+  --color-neutral-2: var(--neutral-2);
+  --color-neutral-3: var(--neutral-3);
+  --color-neutral-4: var(--neutral-4);
+  --color-neutral-5: var(--neutral-5);
+  --color-neutral-6: var(--neutral-6);
+  --color-neutral-7: var(--neutral-7);
+  --color-neutral-8: var(--neutral-8);
+  --color-neutral-9: var(--neutral-9);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-ring: var(--ring);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary-hover: var(--secondary-hover);
+  --color-selected: var(--selected);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-surface: var(--success-surface);
+  --color-success-text: var(--success-text);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-surface: var(--warning-surface);
+  --color-warning-text: var(--warning-text);
+  --font-sans: var(--font-family-body);
+  --font-display: var(--font-family-display);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --shadow-card: var(--shadow-card);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-md: var(--shadow-md);
+  --shadow-menu: var(--shadow-menu);
+  --shadow-modal: var(--shadow-modal);
+  --shadow-raised: var(--shadow-raised);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-toast: var(--shadow-toast);
+  --shadow-xl: var(--shadow-xl);
+  --shadow-xs: var(--shadow-xs);
+  --spacing-control: var(--size-control);
+  --spacing-control-sm: var(--size-control-sm);
+  --spacing-control-lg: var(--size-control-lg);
+  --spacing-control-touch: var(--size-control-touch);
+  --text-xs: var(--font-size-xs);
+  --text-xs--line-height: var(--line-height-xs);
+  --text-xs--letter-spacing: var(--letter-spacing-xs);
+  --text-sm: var(--font-size-sm);
+  --text-sm--line-height: var(--line-height-sm);
+  --text-sm--letter-spacing: var(--letter-spacing-sm);
+  --text-base: var(--font-size-base);
+  --text-base--line-height: var(--line-height-base);
+  --text-base--letter-spacing: var(--letter-spacing-base);
+  --text-lg: var(--font-size-lg);
+  --text-lg--line-height: var(--line-height-lg);
+  --text-lg--letter-spacing: var(--letter-spacing-lg);
+  --text-xl: var(--font-size-xl);
+  --text-xl--line-height: var(--line-height-xl);
+  --text-xl--letter-spacing: var(--letter-spacing-xl);
+  --text-2xl: var(--font-size-2xl);
+  --text-2xl--line-height: var(--line-height-2xl);
+  --text-2xl--letter-spacing: var(--letter-spacing-2xl);
+  --text-3xl: var(--font-size-3xl);
+  --text-3xl--line-height: var(--line-height-3xl);
+  --text-3xl--letter-spacing: var(--letter-spacing-3xl);
+  --text-4xl: var(--font-size-4xl);
+  --text-4xl--line-height: var(--line-height-4xl);
+  --text-4xl--letter-spacing: var(--letter-spacing-4xl);
+  --text-5xl: var(--font-size-5xl);
+  --text-5xl--line-height: var(--line-height-5xl);
+  --text-5xl--letter-spacing: var(--letter-spacing-5xl);
+  --shadow-button: var(--shadow-button);
+  --ease-out-expo: var(--ease-out-expo);
+  --ease-standard: var(--ease-standard);
+}
+
+/* Loading placeholder. Animation is disabled under prefers-reduced-motion (base.css). */
+@utility skeleton {
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    90deg,
+    var(--muted) 0%,
+    color-mix(in oklch, var(--muted) 70%, var(--background)) 50%,
+    var(--muted) 100%
+  );
+  background-size: 200% 100%;
+  animation: ds-skeleton var(--duration-shimmer) ease-in-out infinite;
+}
+@keyframes ds-skeleton {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Enter/exit of floating layers (tooltip, menu, popover, dialog). Radix waits for the
+ * animation to end before unmounting, so this must be an animation, not a transition. */
+@utility animate-enter {
+  animation: ds-enter var(--duration-menu) var(--ease-out-expo) both;
+}
+@utility animate-exit {
+  animation: ds-exit var(--duration-fast) var(--ease-standard) both;
+}
+@keyframes ds-enter {
+  from {
+    opacity: 0;
+    transform: translateY(var(--ds-enter-y, 4px)) scale(0.98);
+  }
+}
+@keyframes ds-exit {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}

@@ -1,0 +1,158 @@
+# K8s Tailor: full context for LLMs
+
+This file concatenates the essential content of the K8s Tailor documentation in one place. It is a condensed copy: the authoritative documents are the Markdown files linked from llms.txt (README.md, docs/INSTALL.md,
+docs/CONFIGURATION.md, docs/ARCHITECTURE.md, docs/TECHNICAL.md, docs/TROUBLESHOOTING.md, docs/LLM-INSTALL.md, SECURITY.md). Where this file and the code disagree, the code wins. 
+
+## 1. What it is
+
+K8s Tailor is a self-hosted Kubernetes pod rightsizer centered on in-place resize. It reads per-container CPU and memory usage from kubelet metrics (stored in VictoriaMetrics or a Prometheus-compatible store), computes a right-sized request with
+statistics, and applies it to running pods through the `pods/resize` subresource, without restarting them. Every decision is explainable and recorded (Kubernetes Events, optional ClickHouse). Configuration lives in Kubernetes custom resources and annotations.
+
+- Pre-1.0 (chart 0.2.0, app 0.1.0, CRDs `v1alpha1`). Requires Kubernetes >= 1.33 (in-place pod resize; GA in 1.35). The project suites run on k3s v1.34; other conformant distributions use the same APIs.
+- Ships inert: the default mode is `Recommend`; nothing is changed until a TailorPolicy (or annotation) enables actuation.
+- License Apache-2.0. Repository: github.com/nicacioliveira/k8s-tailor.
+- Kubernetes in-place resize: alpha 1.27, beta and on by default 1.33, stable 1.35. Minimum recommended cluster version: 1.33. kubectl >= 1.32 for `--subresource=resize`.
+- Not a FinOps platform, not an HPA, not a node autoscaler, not ML. Dollar figures are estimates from static prices unless OpenCost is wired.
+- Related projects and inspirations (checked 2026-10-21): K8s Tailor is an independent project inspired by ideas from VPA (`InPlaceOrRecreate` is beta in Kubernetes 1.35; `InPlace`-only still in development), KRR (recommend-only by default), Goldilocks (shows VPA recommendations), OpenCost (optional price source) and Karpenter (node provisioning, out of scope here).
+
+Distinguishing behavior: learned OOM memory floor (limit x 1.5 for 30 days, persisted as an annotation); decision trail with reasoning and dry-run patches; sidecar-aware (Istio, Linkerd, Vault and similar are classified and stay
+recommend-only until opted in); censored-CPU handling (usage pinned at a CPU limit grows that limit in steps); usage history of replaced pods kept; per-resource confidence; direction gate (Down, Up, Both); HPA hold; PDB-aware disruption budget; Knative revision collapsing; scheduled policies; leader election; offline backtest; optional read-only LLM advisor.
+
+## 2. Architecture
+
+Components (one Helm release, one namespace): the engine Deployment `k8s-tailor` (Go; recommender refresh loop every 60 s, in-place reconciler every 30 s on the Lease holder only, API/UI/metrics on :8080, mutating webhook on :8443 when enabled);
+the MCP Deployment `k8s-tailor-mcp` (Bun server plus React dashboard on :8020, with an nginx sidecar that Bearer-gates `/mcp`); VictoriaMetrics (`victoria-metrics-single` subchart, scrapes kubelet `/metrics/resource` through the API server node proxy every
+5 s and the engine's `/metrics`); ClickHouse single node (decision log, TTL 90 days). Cluster-scoped: four CRDs, ClusterRole/Binding `k8s-tailor-engine` (reads and writes), `k8s-tailor-vmsingle`, optional MutatingWebhookConfiguration
+`zz-k8s-tailor`, optional ValidatingAdmissionPolicies. NetworkPolicies (ingress only): engine :8080 from MCP, vmsingle and `networkPolicy.metricsFrom`; ClickHouse from the engine; MCP from the release namespace and `networkPolicy.mcpFrom`.
+
+Data flow: kubelet metrics -> VictoriaMetrics -> recommender (per container, in memory) -> reconciler/webhook (shared decision code `reconciler.PlanInPlace`) -> `pods/resize`, template patch or Knative Service patch -> Event + decision store. The recommender is read-only.
+
+Reconcile cycle (leader only): skip if paused; one cluster-wide pod snapshot; per container: needs effective mode InPlace or Both, confidence (or OOM), then PlanInPlace (HPA hold, direction gate, drift tolerance 15% and 20m CPU / 16Mi memory,
+OOM limit raise), then guards (outstanding resize, QoS Guaranteed/BestEffort, failure backoff 5 min, PDB with restart-on-resize, cooldown 30 s up / 1 h down, QoS-change, pod-level resources, disruptive rolling one pod per cycle or PDB budget),
+then PATCH `pods/<pod>/resize`, then a separate pod annotation `tailor.k8s-tailor.dev/last-applied`, a decision record and Events.
+
+Resize states (Kubernetes conditions): `PodResizePending` with reason `Deferred` (may be possible later) or `Infeasible` (node can never fit), and `PodResizeInProgress`. While a pod has one, the engine does not stack another patch. Metric `tailor_pods_resize_state`.
+
+Webhook (opt-in): `tailor.webhook.enabled` plus `tailor.actuateNamespaces`; operations CREATE on pods; `failurePolicy: Ignore`, 5 s timeout, `reinvocationPolicy: IfNeeded`, name `zz-k8s-tailor` (with real Istio 1.31.3 the API server called the webhook twice per pod whether it was named aa- or zz-: correctness comes from `reinvocationPolicy: IfNeeded`, not the name); only cpu and memory are changed, other resources preserved; idempotent; patches only CREATE of v1/Pod without subresource, writes nothing at admission (it counts `tailor_webhook_skipped_total{reason=warming_up|not_confident}` when it admits a pod unmodified; patch adds annotation `tailor.k8s-tailor.dev/admission-sized`; the leader's reconciler records the decision later, delay <= RECONCILE_EVERY, not while paused/no leader, dryRun never recorded);
+cert modes `helm` (fails the render without an API server), `certManager`, `existingSecret`.
+
+Container classes: `app`, `injected-sidecar` (mesh marker `sidecar.istio.io/status` or `linkerd.io/proxy-version`, or a name in the built-in list such as istio-proxy, linkerd-proxy, envoy, vault-agent*, cloud-sql-proxy, queue-proxy, or `TailorConfig.spec.sidecarNames`),
+`native-sidecar` (initContainer with restartPolicy Always; a native Istio proxy is reported as `injected-sidecar` with `nativeSidecar=true`), `init` and `ephemeral` (never sized). Injected sidecars use a dedicated profile (CPU p95 margin 0.25, memory p99 margin 0.20) and are capped at Recommend until an explicit rule or annotation sets a mode.
+A container absent from the controller template is never patched into it; its durable path is the mesh proxy annotations when `proxyAnnotations` is on.
+
+Leader election: Lease `k8s-tailor-actuator` in the release namespace (15 s lease, 10 s renew, 2 s retry). Every replica recommends and serves API/UI/webhook; only the leader reconciles. `tailor.replicas > 1` requires `tailor.leaderElection.enabled`. SIGTERM shutdown is ordered: stop actuating, release the Lease (ReleaseOnCancel), drain servers, `Store.Flush`; `tailor.terminationGracePeriodSeconds: 30`.
+
+## 3. Recommendation model (summary)
+
+Metrics (fixed 300 s step, window `WINDOW` default 7d), per namespace:
+- CPU: `rate(container_cpu_usage_seconds_total{namespace="NS",container!="",container!="POD"}[5m])` (or `rollup_rate(...,"max")` with `CPU_RATE_MODE=max`, VictoriaMetrics only).
+- Memory: `max_over_time(container_memory_working_set_bytes{namespace="NS",container!="",container!="POD"}[5m])`.
+Series are concatenated across pods; the quantile is therefore a per-pod request. The engine applies no cluster selector: the store must hold only this cluster's series.
+
+Per container: trim to the current regime (change point: relative mean shift >= 0.5 on a running-median-filtered series, at least 24 timestamps); decay-weighted quantile with weight 2^(-age/H) (default p90 CPU, p95 memory, H=24h); peak; seasonal forecast one hour ahead
+(hour-of-day, hour-of-week or both; gated by lag correlation >= 0.5). Then:
+cpu_req = clamp(max(cpuQ*(1+m), cpuForecast*(1+m)), min, max)
+mem_req = clamp(max(memQ*(1+m), memPeak, memForecast*(1+m)), min, max)
+default margin m = 0.15. Optional headroom guard. Scale-down stabilization (default 15 m): never below the max raw recommendation of the window. Requests are capped at the current limit unless `allowExceedLimit`. CPU rounds up to 1m, memory up to 1MiB.
+Limits: a memory limit is re-derived only where one exists (max(req*limitFactor, peak*(1+m), req)); a CPU limit only if `cpu.limitFactor > 0`; limits are never shrunk in place and a memory limit is introduced only with the opt-in `memory.enforceLimit` (policy, profile or `containers[].memory`). OOM floor: a container with a memory limit that is OOMKilled gets its limit protected
+at killed-limit x 1.5 (`OOM_GROWTH_FACTOR`) for `OOM_FLOOR_TTL` (30d). The floor is persisted as an annotation on Deployments, StatefulSets, DaemonSets, Knative Services (object metadata) and, for TailorGroups, `tailor.k8s-tailor.dev/group-oom-floor` on the TailorGroup; a bare Pod keeps it in memory only. For containers without a memory limit no limit is created (unless `enforceLimit`); the request raise is capped at peak x `OOM_MEM_CAP_FACTOR` (default 4), then by the policy `memory.max`.
+Censored CPU: when at least a quarter of the last hour's samples are at >= 90% of the live CPU limit (or, if cAdvisor series exist, a quarter of CFS periods are throttled), the usage is a lower bound of the demand; the existing CPU limit is raised by `CPU_LIMIT_GROWTH_FACTOR` (1.5) per step and the request lifted to at least the live limit,
+bounded by the policy `cpu.max` or the template limit x `CPU_CENSOR_MAX_FACTOR` (8). Never under a shrink-only policy, an HPA hold or without CPU confidence; only on an existing limit. History of replaced pods is attributed to their Deployment (via ReplicaSet name) or DaemonSet (`OwnerOf`). The memory trend (display only) needs >= 24 points and R² >= 0.5 (`TrendForecast`).
+Confidence: per resource, distinct scrape timestamps >= `MIN_SAMPLES`. The chart default is 288 (24 h at 300 s); the engine default is 30; dev/k3s uses 2. With chart defaults a new workload is not actuated for about a day, on purpose.
+HPA: a `Resource` metric on CPU or memory holds that resource (recommended, never actuated); the other is sized. Direction: Down never raises, Up never lowers.
+
+## 4. Installation
+
+Prerequisites: Kubernetes >= 1.33 (project suites run on k3s v1.34.12), Helm 3, cluster-admin, a default StorageClass (two PVCs of 10Gi by default), optionally cert-manager (webhook). One release per cluster (fixed object names, cluster-scoped RBAC).
+
+```
+helm dependency build chart        # chart/charts/ is git-ignored; required on a clean clone
+helm upgrade --install k8s-tailor ./chart -n k8s-tailor --create-namespace -f values.yaml --wait --timeout 10m
+```
+
+Images: defaults `ghcr.io/nicacioliveira/k8s-tailor` and `ghcr.io/nicacioliveira/k8s-tailor-mcp`, tag `v<appVersion>` = v0.1.0. **They do not exist yet** (private repository, no tag pushed): a default install gives ImagePullBackOff. Options (docs/UPGRADE.md#images):
+(a) the repository OWNER publishes (`git tag v0.1.0 && git push origin v0.1.0` or `gh workflow run build-images.yml -f version=v0.1.0`) and makes the packages public or you set `global.imagePullSecrets`; never publish on your own initiative;
+(b) build locally (`make docker TAG=dev`), load with `k3d image import k8s-tailor:dev k8s-tailor-mcp:dev -c <cluster>` or `kind load docker-image`, and set `tailor.image.repository/tag`, `mcp.image.repository/tag`.
+
+Production hints: existing Secrets for `tailor.apiAuth`, `mcp.auth`, `clickhouse.auth` and `secretGeneration.failWithoutLookup=true` under GitOps (helm template has no `lookup`); `networkPolicy.mcpFrom` listing the ingress controller namespace; optional
+`tailor.admissionPolicy.enabled` (Kubernetes >= 1.30); put TLS and SSO in front of the UI. Reuse mode: `clickhouse.enabled=false`, `victoria-metrics-single.enabled=false`, `tailor.env.CH_URL`, `VM_URL`; usage queries carry `job="kubelet-resource"` (`tailor.vmJob`/`VM_JOB`, empty disables): set it to your kubelet scrape job or the engine is inert.
+
+Rollout: stay in Recommend for at least the confidence window; then one namespace with `mode: InPlace`, `apply: InPlace`, `direction: Down`; then `direction: Both`; then widen. Kill switch: `kubectl patch tailorconfig cluster --type=merge -p '{"spec":{"paused":true}}'`.
+
+Verify: `kubectl -n k8s-tailor get pods` (engine 1/1, mcp 2/2, clickhouse 1/1, vmsingle 1/1); `kubectl get crd | grep tailor.k8s-tailor.dev` (4); `kubectl get tailorconfig cluster -o jsonpath='{.spec.paused} {.spec.defaultMode}'` -> `false Recommend`;
+`kubectl get --raw /api/v1/namespaces/k8s-tailor/services/k8s-tailor:8080/proxy/healthz` -> `{"ok":true,...,"actuation":"dry-run","vmHealthy":true}`.
+UI: `kubectl -n k8s-tailor port-forward svc/k8s-tailor-mcp 8020:8020`; tokens in Secrets `k8s-tailor-mcp-auth` and `k8s-tailor-api-auth` (key `token`) unless existing Secrets are used.
+Uninstall leaves CRDs, generated Secrets and PVCs by design; see docs/INSTALL.md section 11.
+
+Local: `make k3s-up` (k3d cluster `tailor-dev`, builds images, installs the chart with dev values, applies demo/), `make k3s-smoke` (asserts an in-place resize with unchanged pod UID and restartCount), `make k3s-down`.
+
+## 5. Configuration
+
+Helm values (selected, defaults): `crds.install=true`, `crds.keep=true`, `secretGeneration.failWithoutLookup=false`, `tailor.replicas=1`, `tailor.leaderElection.enabled=true`, `tailor.apiAuth.enabled=true`, `tailor.webhook.enabled=false`,
+`tailor.webhook.certMode=helm`, `tailor.actuateNamespaces=""`, `tailor.admissionPolicy.enabled=false`, `tailor.advisor.enabled=false`, `mcp.auth.enabled=true`, `networkPolicy.enabled=true`, `serviceMonitor.enabled=false`, `clickhouse.enabled=true`,
+`victoria-metrics-single.enabled=true` (retention 8d, PVC 10Gi). `tailor.excludeNamespaces` default: kube-system, kube-public, kube-node-lease, istio-system, istio-ingress, istio-gateway, linkerd, linkerd-viz, cert-manager, knative-serving, knative-eventing,
+kourier-system, gatekeeper-system, kyverno, external-secrets, argocd, flux-system, monitoring (the release namespace is always added).
+
+Engine environment (`tailor.env.*`): `WINDOW=7d`, `CPU_QUANTILE=0.90`, `MEM_QUANTILE=0.95`, `MARGIN=0.15`, `HALF_LIFE=24h`, `REFRESH_EVERY=60s`, `RECONCILE_EVERY=30s`, `MIN_SAMPLES` (engine 30, chart 288), `CPU_RATE_MODE=avg|max`, `MEM_LIMIT_FACTOR=1.0`,
+`CPU_LIMIT_FACTOR=0`, `MIN_CPU_MILLI=10`, `MIN_MEM_MI=32`, `OOM_LEARN=true`, `OOM_GROWTH_FACTOR=1.5`, `OOM_FLOOR_TTL=30d`, `OOM_MEM_CAP_FACTOR=4`, `CPU_LIMIT_GROWTH_FACTOR=1.5`, `CPU_CENSOR_MAX_FACTOR=8`, `PRICING_MODE=static|opencost`, `PRICE_CPU_CORE_HR=0.031`, `PRICE_GB_HR=0.004`, `VM_URL`, `CH_URL`, `CH_DATABASE`, `CH_USER`,
+`CH_PASSWORD`, `CH_RETENTION_DAYS=90`, `TAILOR_API_TOKEN`, `TAILOR_API_AUTH_REQUIRED`, `LEADER_ELECT`, `ADVISOR_*`.
+
+CRDs (cluster-scoped, `tailor.k8s-tailor.dev/v1alpha1`):
+- TailorConfig `cluster` (short `rscfg`): `paused`, `defaultMode` (default Recommend), `observedKinds` (Deployment, StatefulSet, DaemonSet, Pod), `excludeNamespaces`, `observeSelector`, `sidecarNames`.
+- TailorPolicy (`rsp`): `priority` (-10000..10000), `mode`, `profileRef`, `apply` (InPlace, Rollout, InPlacePreferred), `direction` (Both, Down, Up), `season` (daily, weekly, both, off), `halfLife`, `allowExceedLimit`, `oomOverridesDirection`, `headroomGuard`,
+  `headroomThreshold`, `schedule{timezone,outsideMode,windows[{days,start,end,from,until}]}`, `selector{namespaces (globs), matchLabels}`, `cpu`/`memory{quantile,margin,min,max,limitFactor}`, `scaleUp.cooldown` (30s), `scaleDown{cooldown (1h), stabilization (15m)}`,
+  `containers[]{match{names,classes}, exclude, mode, apply, direction, profileRef, proxyAnnotations, cpu, memory}` (first match wins).
+- TailorProfile (`rsprof`): `cpu`, `memory`, `scaleUp`, `scaleDown`, `containers[]`.
+- TailorGroup (`tgrp`): `groupBy` (required; a label key or `namespace`), `namespaces`, `actuation` (ksvc default, direct, webhook), `cohort{by, select all|latest|activeByTraffic}`. With no TailorGroup, Knative revisions collapse by `serving.knative.dev/service`.
+
+Precedence for mode: annotation `tailor.k8s-tailor.dev/ignore: "true"` (absolute Off) > annotation `tailor.k8s-tailor.dev/mode` > highest-priority matching TailorPolicy > TailorConfig.defaultMode. Other annotations: `tailor.k8s-tailor.dev/profile`,
+`tailor.k8s-tailor.dev/container.<name>.{mode,exclude,profile,apply,direction,min-cpu,max-cpu,min-mem,max-mem,proxy-annotations}`; engine-written: `last-applied`, `oom-floor`, and on pods `resize-failed` and `rolling` (failure backoff and in-progress disruptive rolling; prefix `tailor.k8s-tailor.dev/`). TailorPolicy also takes `seasonGate{minCorrelation,minPairs}` and `memory.enforceLimit`; `tailor.presets.enabled` installs a `bursty` TailorProfile (cpu.quantile 0.95).
+
+Example:
+```
+apiVersion: tailor.k8s-tailor.dev/v1alpha1
+kind: TailorPolicy
+metadata: { name: pilot }
+spec:
+  priority: 100
+  selector: { namespaces: ["my-pilot-ns"] }
+  mode: InPlace
+  apply: InPlace
+  direction: Down
+```
+
+## 6. Engine HTTP API (:8080 of Service k8s-tailor)
+
+Reads are open unless `tailor.apiAuth.protectReads=true` (`TAILOR_API_PROTECT_READS`: then `GET /api/*` needs the same Bearer token; `/healthz`, `/livez`, `/metrics` stay open): `GET /healthz` (JSON ok, source, actuation dry-run|active|paused, vmUrl, vmHealthy), `GET /livez`, `GET /api/recommendations`, `GET /api/overview`, `GET /api/detail/{ns}/{kind}/{workload}/{container}`,
+`GET /api/patch/{ns}/{kind}/{workload}/{container}` (dry-run patch bodies), `GET /api/actuations`, `GET /api/economy`, `GET /api/policies`, `GET /api/groups`, `GET /api/groups/{name}/members`, `GET /api/profiles`, `GET /api/advisor/status`, `GET /metrics`, `GET /`.
+Writes need `Authorization: Bearer <TAILOR_API_TOKEN>` and `Content-Type: application/json` (415 otherwise), same-origin for browsers (403), body <= 1 MiB (413), fail closed with 503 when auth is required and no token is set:
+`POST /api/pause {"paused":bool}`, `POST /api/policies` (merge), `DELETE /api/policies/{name}`, `POST /api/groups`, `DELETE /api/groups/{name}`, `POST /api/workload {namespace,kind,workload,mode?,profile?}` or, per container, `{namespace,kind,workload,container,mode?,exclude?}` (init/ephemeral containers refused; `ignore` still wins), `POST /api/advisor/review`, `POST /api/advisor/summary`.
+MCP: `POST /mcp` on :8020 (JSON-RPC 2.0, Bearer), tools TAILOR_OVERVIEW, _LIST_RECOMMENDATIONS, _GET_DETAIL, _LIST_ACTUATIONS, _PREVIEW_PATCH, _ECONOMY, _HEALTH, _ADVISOR_STATUS/_REVIEW/_SUMMARY, _LIST_POLICIES/_GROUPS/_PROFILES, _GROUP_MEMBERS (read-only);
+_SET_PAUSED, _SET_POLICY, _DELETE_POLICY, _SET_GROUP, _DELETE_GROUP, _SET_WORKLOAD (writes).
+
+Metrics: `tailor_recommended_{cpu_cores,mem_bytes}`, `tailor_current_{cpu_cores,mem_bytes}`, `tailor_waste_usd_week`, `tailor_cpu_p90_cores`, `tailor_mem_p95_bytes`, `tailor_headroom_breach_{cpu,mem}_share`, `tailor_predicted_mem_bytes`, `tailor_mutations_total`,
+`tailor_recommendations{status}`, `tailor_workloads{mode}`, `tailor_paused`, `tailor_resizes_total{mode,result}`, `tailor_resize_skipped_total{reason}`, `tailor_webhook_skipped_total{reason}`, `tailor_pods_resize_state{state}`, `tailor_refresh_duration_seconds`, `tailor_last_refresh_success_timestamp_seconds`,
+`tailor_query_errors_total{backend}`, `tailor_leader`, `tailor_advisor_*`. Events: Rightsized, ResizeFailed, ResizeSkipped, ResizeInfeasible, RolloutFailed.
+
+## 7. Security model (summary)
+
+A privileged, cluster-scoped controller. Controls: Bearer-gated write API (on by default, constant-time compare, CSRF and size guards); MCP gated twice: a deny-by-default nginx sidecar (only /, /index.html, /healthz, /readyz open; Bun binds 127.0.0.1) and Bun itself, which always requires MCP_API_TOKEN (chars `A-Z a-z 0-9 . _ ~ + / = -`), refuses to start without it, routes on the raw request-target and answers 400 to non-canonical paths (regression test mcp/server/e2e/nginx-gate.sh, CI job mcp-gate); links carry the token only as `#token=`; least-privilege RBAC (no secrets, no nodes, no watch;
+the engine ClusterRole `k8s-tailor-engine` writes); NetworkPolicies (the Calico v3.33.0 suite checks blocking and allowing: 8 scenarios, 52 PASS / 0 FAIL in the recorded run, negative control included; needs a CNI that enforces them); optional ValidatingAdmissionPolicies restricting what the engine ServiceAccount may change; non-root, read-only-rootfs containers; the release namespace is never actuated; the advisor sends only aggregated numbers.
+Residual gaps: one shared static token, reads open by default (rely on NetworkPolicy; `tailor.apiAuth.protectReads=true` requires the token on `GET /api/*`; which does nothing without an enforcing CNI; port-forward bypasses it), unsigned images, vmsingle has no auth. Report vulnerabilities privately (SECURITY.md).
+
+## 8. Verification and limits
+
+Verification: unit tests with -race, chart lint/render tests, MCP tsc/biome/bun tests and the nginx-gate regression in CI; an end-to-end run on k3s v1.34.12 (docs/E2E.md; Knative scenario skipped for lack of CRDs); the Calico suite (dev/calico/README.md; one node, so `webhookFrom` vs the API server is not exercised; it does not run on Docker runtimes whose kernel lacks xt_CT/xt_NFLOG/rpfilter, such as "Dory"); the Istio 1.31.3 suite, classic and native sidecars, 7 scenarios each (dev/istio/README.md; a proxy's CPU request does not change throttling, only its limit does); the synthetic backtest.
+Remaining limits (docs/KNOWN-ISSUES.md has reasons and workarounds): Guaranteed-QoS pods are not resized in place and the webhook leaves Guaranteed templates alone (`guaranteed_qos` skips); the OOM ceiling ignores LimitRange and node allocatable; node-level and cgroup OOMs are indistinguishable; the history of replaced pods does not cover a garbage-collected ReplicaSet, bare Pods, ksvc or group units; "Applied" reads the spec on kubelets older than 1.33; about 2 s of decisions can be lost on SIGKILL; ksvc, group and bare Pods have no desired replica count; a CPU-greedy container grows to its ceiling; Envoy does not change concurrency after a resize; weekly seasonality needs a window longer than 7 days; cost figures are estimates. Disruptive reads of PDB and replicas are live (hold with `disruptive_live_unknown` if the read fails). The bursty remedy is the `bursty` profile. Default GHCR images are not published until the first release. Details: docs/KNOWN-ISSUES.md.
+
+## 9. Working on the repository
+
+Go (go.mod: 1.26.1), Bun 1.3.10, Helm 3. Commands: `make ui-build`, `make test`, `go test -race -count=1 ./...`, `make vet`, `make lint`, `make chart-lint`, `make chart-test`, `make docker`, `make k3s-up|k3s-smoke|k3s-down`,
+`go run ./cmd/k8s-tailor backtest -synthetic all` (7 scenarios: diurnal-weekly, bursty, step-change, memory-leak, memory-spikes, heterogeneous, throttled-cap), `dev/calico/netpol-test.sh` (NetworkPolicy suite; needs a kernel with the netfilter modules Calico uses, e.g. a Lima VM), `dev/istio/mesh-test.sh` (real Istio on k3d, istioctl 1.31.3 downloaded if absent). Layout: `cmd/k8s-tailor`, `internal/{recommender,reconciler,webhook,policy,k8s,server,advisor,backtest,actuation,ch,vm,metrics,leader,pricing,config}`, `web/` (go:embed), `mcp/` (Bun server, React dashboard),
+`chart/`, `deploy/`, `dev/{k3s,calico,istio}/`, `demo/`, `docs/`. Conventions and what not to touch: AGENTS.md. Do not weaken safety rules without a test and a doc update; edit CRDs in `chart/templates/crds/`.
+
+## 10. Agent install rules (summary of docs/LLM-INSTALL.md)
+
+Never without explicit human confirmation: enable InPlace/Both/Webhook anywhere, enable the webhook, disable auth or NetworkPolicy, touch system namespaces, print secrets, delete/uninstall, or install on production. Ask first: context, namespace, images, metrics source, secrets handling,
+UI access, which namespaces may ever be actuated. Preflight: server >= 1.33, `pods/resize` present in `/api/v1`, Helm 3, default StorageClass, a CNI that enforces NetworkPolicy (else stop and ask: the policies would be no-ops), no existing CRDs or release. Install inert, verify (pods, 4 CRDs, TailorConfig `false Recommend`, healthz `dry-run`, metrics flowing, refresh logged), hand off,
+and only then, on request, a one-namespace `direction: Down` pilot. Stop on any mismatch.

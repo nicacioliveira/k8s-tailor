@@ -1,0 +1,86 @@
+# Demo workloads with deliberately wrong requests, so the recommender has
+# something obvious to correct. Apply into a throwaway namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tailor-demo
+---
+# Over-provisioned: asks for 1 CPU / 512Mi but does almost nothing.
+# Expect a large downward recommendation (positive $/week savings).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: overprovisioned-idle
+  namespace: tailor-demo
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: overprovisioned-idle }
+  template:
+    metadata:
+      labels: { app: overprovisioned-idle }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "while true; do sleep 30; done"]
+          resources:
+            requests:
+              cpu: "1"
+              memory: 512Mi
+            limits:
+              memory: 512Mi
+---
+# Modestly busy but hugely over-requested CPU.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-overcommit
+  namespace: tailor-demo
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: cpu-overcommit }
+  template:
+    metadata:
+      labels: { app: cpu-overcommit }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          # ~5% of a core: tight inner loop with frequent sleeps
+          command: ["sh", "-c", "while true; do for i in $(seq 1 100000); do :; done; sleep 1; done"]
+          resources:
+            requests:
+              cpu: 800m
+              memory: 128Mi
+            limits:
+              memory: 128Mi
+---
+# Under-provisioned memory: requests 16Mi but grows toward ~60Mi.
+# Expect an UPWARD memory recommendation (negative $/week = needs more).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mem-underprovisioned
+  namespace: tailor-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: mem-underprovisioned }
+  template:
+    metadata:
+      labels: { app: mem-underprovisioned }
+    spec:
+      containers:
+        - name: app
+          # Multi-arch (amd64 + arm64). Allocates and touches ~56 MiB once, then
+          # idles, so the working set is a steady ~60 MiB against a 16Mi request.
+          image: python:3.12-alpine
+          command: ["python", "-c"]
+          args:
+            - "import time; b = bytearray(b'\\x01') * (56 * 1024 * 1024); time.sleep(10**9)"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 16Mi

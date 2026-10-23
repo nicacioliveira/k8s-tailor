@@ -1,0 +1,60 @@
+# Production values overlay for K8s Tailor. Typically one per cluster
+# (values-<cluster>.yaml); the Application inline block mirrors these. Only the deltas from chart defaults are here.
+# No `namespace:` value: the chart installs into the release namespace
+# (ArgoCD destination.namespace).
+
+# GitOps renders with `helm template` (no lookup): every credential below comes
+# from ESO; a forgotten one fails the render instead of rotating silently.
+secretGeneration:
+  failWithoutLookup: true
+
+tailor:
+  # MUST pin to an immutable release tag or digest before prod (not :latest) so a
+  # new push isn't silently pulled and ArgoCD can detect image drift.
+  image:
+    repository: ghcr.io/nicacioliveira/k8s-tailor
+    tag: v0.1.0 # replace with the released tag
+    # digest: sha256:...
+  imagePullPolicy: IfNotPresent
+  # Engine write-API Bearer, shared with the MCP (which forwards it).
+  apiAuth:
+    existingSecret: k8s-tailor   # key api-token (see externalsecret.yaml)
+    secretKey: api-token
+  webhook:
+    enabled: false # in-place reconciler is the default path; webhook is opt-in
+    # If enabled under ArgoCD use certMode: certManager (or existingSecret) —
+    # certMode helm fails the render without a live API server (it would mint a
+    # new CA on every `helm template`).
+  # Chart default MIN_SAMPLES is 288 (24h at the engine's 300s step).
+  # env:
+  #   CH bundled by default; for REUSE MODE point at the fleet CH and disable below:
+  #   CH_URL: http://<fleet-clickhouse>:8123
+  # The release namespace is always excluded; the chart default list covers
+  # kube-*, istio-*, linkerd*, cert-manager, knative, gatekeeper, kyverno,
+  # external-secrets, argocd, flux-system, monitoring. Extend it here:
+  # excludeNamespaces: [kube-system, ..., keda]
+
+# The chart has no default ClickHouse password: it generates one and reuses it
+# via `lookup`, which ArgoCD's `helm template` cannot do (a new password would be
+# minted on every sync). Source it from the same ESO Secret instead.
+clickhouse:
+  auth:
+    existingSecret: k8s-tailor   # key clickhouse-password (see externalsecret.yaml)
+    passwordKey: clickhouse-password
+
+mcp:
+  image:
+    repository: ghcr.io/nicacioliveira/k8s-tailor-mcp
+    tag: v0.1.0 # replace with the released tag
+  auth:
+    enabled: true
+    token: "" # never inline in prod — ESO owns it
+    existingSecret: k8s-tailor   # one Secret (see externalsecret.yaml), key mcp-token
+    secretKey: mcp-token
+
+
+# Alternatively, REUSE existing stores instead of bundling — then no bundled
+# credential exists at all:
+#   clickhouse: { enabled: false }
+#   victoria-metrics-single: { enabled: false }
+#   tailor.env: { CH_URL: http://<fleet-ch>:8123, VM_URL: http://<fleet-vm>:8428 }

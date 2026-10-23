@@ -1,0 +1,18 @@
+k8s-tailor {{ .Chart.Version }} installed in namespace {{ .Release.Namespace }} — inert until a TailorPolicy enables actuation.
+
+UI / MCP:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/k8s-tailor-mcp 8020:8020   # then http://localhost:8020
+{{- if and .Values.mcp.enabled (not (and (not .Values.mcp.auth.enabled) .Values.mcp.auth.allowUnauthenticated)) }}
+  MCP/UI token:  kubectl -n {{ .Release.Namespace }} get secret {{ include "tailor.mcpSecretName" . }} -o jsonpath='{.data.{{ .Values.mcp.auth.secretKey }}}' | base64 -d
+{{- end }}
+{{- if .Values.tailor.apiAuth.enabled }}
+Engine write API (POST/DELETE /api/*){{ if .Values.tailor.apiAuth.protectReads }} and read API (GET /api/*){{ end }} requires a Bearer token (the MCP forwards it):
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "tailor.apiSecretName" . }} -o jsonpath='{.data.{{ .Values.tailor.apiAuth.secretKey | default "token" }}}' | base64 -d
+{{- else }}
+WARNING: tailor.apiAuth.enabled=false — the engine write API is UNAUTHENTICATED.
+{{- end }}
+{{- if not (include "tailor.lookupAvailable" .) }}
+NOTE: rendered without a Kubernetes API (helm template / GitOps): generated secrets are NOT stable
+across renders. Use existingSecret for tailor.apiAuth, mcp.auth and clickhouse.auth (docs/UPGRADE.md).
+{{- end }}
+Excluded namespaces: {{ include "tailor.excludeNamespaces" . }}

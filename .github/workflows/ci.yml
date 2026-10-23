@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Cancel superseded runs of the same ref (saves minutes on PR pushes).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: "1.3.10" # keep in sync with Dockerfile
+
+jobs:
+  go:
+    name: Go (fmt, vet, test -race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('mcp/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l cmd internal web)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed:"; echo "$unformatted"; exit 1
+          fi
+
+      # The engine embeds the dashboard (web/dist) via go:embed, so the UI
+      # bundle must exist before vet/test can compile the server package.
+      - name: Build embedded UI
+        run: make ui-build
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: go test -race -count=1 ./...
+
+  helm:
+    name: Helm (lint, template)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Cache chart dependencies
+        uses: actions/cache@v4
+        with:
+          path: chart/charts
+          key: helm-deps-${{ hashFiles('chart/Chart.lock') }}
+
+      - name: Build chart dependencies
+        run: |
+          helm repo add victoria-metrics https://victoriametrics.github.io/helm-charts
+          helm dependency build chart
+
+      - name: helm lint
+        run: helm lint --strict chart
+
+      - name: helm template (defaults)
+        run: helm template k8s-tailor chart >/dev/null
+
+      - name: helm template (webhook + external stores)
+        run: |
+          helm template k8s-tailor chart \
+            --set tailor.webhook.enabled=true \
+            --set tailor.webhook.allowEphemeralCA=true \
+            --set tailor.actuateNamespaces=sandbox \
+            --set clickhouse.enabled=false \
+            --set victoria-metrics-single.enabled=false \
+            --set mcp.auth.enabled=false >/dev/null
+
+  mcp:
+    name: MCP (tsc, biome, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('mcp/bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
+      - name: Install
+        working-directory: mcp
+        run: bun install --frozen-lockfile
+
+      - name: tsc
+        working-directory: mcp
+        run: bun run check
+
+      # Config lives in the repo root (biome.json); run from there.
+      - name: biome format
+        run: mcp/node_modules/.bin/biome format mcp/server mcp/web
+
+      - name: bun test
+        working-directory: mcp
+        run: bun test
+
+      - name: Build dashboard + server bundle
+        working-directory: mcp
+        run: bun run build
+
+  # The MCP auth gate end to end: the chart's nginx sidecar config/image + this
+  # repo's Bun server, against every path-confusion bypass (/..\mcp, //mcp,
+  # /%2e%2e/mcp, /MCP...), with and without the sidecar.
+  mcp-gate:
+    name: MCP auth gate (nginx + Bun, docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Chart dependencies
+        run: |
+          helm repo add victoria-metrics https://victoriametrics.github.io/helm-charts
+          helm dependency build chart
+
+      - name: Install + build UI
+        working-directory: mcp
+        run: bun install --frozen-lockfile && bun run build:web
+
+      - name: Gate regression
+        run: |
+          python3 -c "import yaml" 2>/dev/null || pip install pyyaml
+          mcp/server/e2e/nginx-gate.sh

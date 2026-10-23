@@ -1,0 +1,9 @@
+/* Inter 4 (SIL OFL 1.1, (c) The Inter Project Authors — license in ./fonts/Inter-OFL.txt).
+ * One family for everything. Axes: weight 100–900 and optical size 14–32. */
+@font-face {
+  font-family: "Inter";
+  src: url("./fonts/InterVariable-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}

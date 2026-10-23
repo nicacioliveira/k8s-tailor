@@ -1,0 +1,276 @@
+{{- if .Values.mcp.enabled }}
+{{- $ns := include "tailor.namespace" . }}
+{{- $auth := .Values.mcp.auth }}
+{{- $open := and (not $auth.enabled) $auth.allowUnauthenticated }}
+{{- $mcpSecret := include "tailor.mcpSecretName" . }}
+{{- /* Characters the token may contain (RFC 6750 token68): the nginx sidecar
+embeds it in its config, so a quote, semicolon, `$`, backslash, brace or space
+could rewrite that config. Checked here for inline/kept tokens, and at runtime by
+the sidecar (existingSecret) and by Bun (MCP_API_TOKEN). */}}
+{{- $tokenRe := "^[A-Za-z0-9._~+/=-]+$" }}
+# MCP server + React dashboard (the product UI). Single browser entry point: it
+# serves the UI at "/" and JSON-RPC at "/mcp", and proxies the Go engine
+# in-cluster (TAILOR_API), forwarding the engine write token.
+#
+# Unless mcp.auth.allowUnauthenticated (dev), /mcp needs `Bearer <mcp token>`
+# TWICE: the nginx sidecar (mcp.auth.enabled; deny-by-default, only /, /index.html,
+# /healthz and /readyz are open) and Bun itself (MCP_API_TOKEN, always injected;
+# Bun also refuses any non-canonical path with 400). With the sidecar Bun binds
+# 127.0.0.1, so podIP:8020 is closed. The UI shell at / carries no data and
+# prompts for the token. To gate the PAGE itself, front it with oauth2-proxy /
+# basic-auth + private DNS (and networkPolicy.mcpFrom for the ingress).
+{{- if and (not $open) (not $auth.existingSecret) }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $mcpSecret }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+  annotations:
+    # A generated token must survive uninstall/reinstall of the release.
+    helm.sh/resource-policy: keep
+type: Opaque
+stringData:
+  {{- $tok := include "tailor.secretValue" (dict "ns" $ns "name" $mcpSecret "key" $auth.secretKey "value" $auth.token "what" "mcp.auth" "ctx" $) }}
+  {{- if not (regexMatch $tokenRe $tok) }}
+  {{- fail "mcp.auth.token may only contain A-Z a-z 0-9 . _ ~ + / = - (the nginx sidecar embeds it in its config)" }}
+  {{- end }}
+  {{ $auth.secretKey }}: {{ $tok | quote }}
+---
+{{- end }}
+{{- if $auth.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k8s-tailor-mcp-nginx
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+data:
+  # Rendered by the nginx image entrypoint (envsubst, TOKEN only — nginx's own
+  # $vars are preserved). conf.d is included inside http{}: map/log_format live
+  # there. The token charset is validated before nginx starts (container command).
+  default.conf.template: |
+    # Bearer check without `if` string interpolation: exact-match map.
+    map $http_authorization $tailor_mcp_authorized {
+      default 0;
+      "Bearer ${TOKEN}" 1;
+    }
+    # Access log WITHOUT query string or headers (Authorization is never logged),
+    # JSON-escaped so a crafted path can't forge log lines.
+    log_format tailor_mcp escape=json '{"time":"$time_iso8601","remote":"$remote_addr","method":"$request_method","path":"$uri","status":$status,"bytes":$body_bytes_sent,"ms":$request_time}';
+    server {
+      listen 8080;
+      server_tokens off;
+      access_log /dev/stdout tailor_mcp;
+      # nginx's error log prints the raw request line (query string included) on
+      # every warn/notice; keep only real errors.
+      error_log /dev/stderr error;
+      client_max_body_size 1m;
+      client_header_timeout 10s;
+      client_body_timeout 30s;
+      proxy_http_version 1.1;
+      # $http_host keeps the port: Bun compares the browser Origin with it.
+      proxy_set_header Host $http_host;
+      proxy_set_header Connection "";
+      # Stream large responses (the UI bundle) instead of spilling to /tmp.
+      proxy_max_temp_file_size 0;
+
+      # Exact allowlist of what is served WITHOUT the token: probes and the UI
+      # shell (one self-contained HTML, no data). proxy_pass with a URI sends the
+      # canonical path whatever the client wrote; the query string is dropped.
+      location = /healthz    { limit_except GET { deny all; } set $args ""; proxy_pass http://127.0.0.1:8020/healthz; }
+      location = /readyz     { limit_except GET { deny all; } set $args ""; proxy_pass http://127.0.0.1:8020/readyz; }
+      location = /           { limit_except GET { deny all; } set $args ""; proxy_pass http://127.0.0.1:8020/; }
+      location = /index.html { limit_except GET { deny all; } set $args ""; proxy_pass http://127.0.0.1:8020/index.html; }
+
+      # DENY BY DEFAULT: everything else (/mcp and any spelling of it: /..\mcp,
+      # //mcp, /MCP...) needs the Bearer. The raw URI is forwarded and Bun refuses
+      # non-canonical paths (400) and checks the Bearer again.
+      location / {
+        if ($tailor_mcp_authorized = 0) {
+          add_header WWW-Authenticate Bearer always;
+          return 401;
+        }
+        proxy_pass http://127.0.0.1:8020;
+        proxy_buffering off;      # SSE / streamable-http
+        proxy_read_timeout 300s;  # above the engine's 3 min write timeout (advisor)
+      }
+    }
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-tailor-mcp
+  namespace: {{ $ns }}
+  labels:
+    app: k8s-tailor-mcp
+    {{- include "tailor.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: k8s-tailor-mcp }
+  template:
+    metadata:
+      labels: { app: k8s-tailor-mcp }
+    spec:
+      # The MCP never talks to the Kubernetes API (it proxies the engine).
+      automountServiceAccountToken: false
+      {{- include "tailor.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.mcp.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mcp
+          image: {{ include "tailor.image" (dict "img" .Values.mcp.image "ctx" $) }}
+          imagePullPolicy: {{ .Values.mcp.imagePullPolicy | default "IfNotPresent" }}
+          {{- with .Values.mcp.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - { name: mcp, containerPort: 8020 }
+          env:
+            - { name: PORT, value: "8020" }
+            {{- if $auth.enabled }}
+            # Only the nginx sidecar (same netns) can reach this port.
+            - { name: MCP_HOST, value: "127.0.0.1" }
+            {{- else }}
+            - { name: MCP_HOST, value: "0.0.0.0" }
+            {{- end }}
+            {{- if $open }}
+            # DEV ONLY: /mcp open to anything that reaches this pod (Bun then only
+            # answers loopback Host names: port-forward works, DNS rebinding not).
+            - { name: MCP_ALLOW_UNAUTHENTICATED, value: "true" }
+            {{- else }}
+            # Bun enforces the SAME Bearer as the sidecar (defense in depth) and
+            # refuses to start without it.
+            - name: MCP_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $mcpSecret }}
+                  key: {{ $auth.secretKey }}
+            {{- end }}
+            {{- with .Values.mcp.allowedHosts }}
+            - { name: MCP_ALLOWED_HOSTS, value: {{ join "," . | quote }} }
+            {{- end }}
+            {{- with .Values.mcp.allowedOrigins }}
+            - { name: MCP_ALLOWED_ORIGINS, value: {{ join "," . | quote }} }
+            {{- end }}
+            - { name: TAILOR_API, value: {{ printf "http://k8s-tailor.%s.svc:8080" $ns | quote }} }
+            # Read-only rootfs: bun's caches go to the /tmp emptyDir.
+            - { name: HOME, value: /tmp }
+            {{- $apiAuth := .Values.tailor.apiAuth | default dict }}
+            {{- if $apiAuth.enabled }}
+            # Same Bearer the engine requires on its write API and on POST
+            # /api/advisor/*, for the MCP tools (and the UI behind /mcp) to forward.
+            - name: TAILOR_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tailor.apiSecretName" . }}
+                  key: {{ $apiAuth.secretKey | default "token" }}
+            {{- end }}
+            {{- range $k, $v := .Values.mcp.env }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
+          {{- if $auth.enabled }}
+          # Bun listens on 127.0.0.1 only, so the kubelet probes go through the
+          # sidecar (whose /healthz and /readyz are open and proxied here). Numeric
+          # port: a named port must be declared by the probed container itself.
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          {{- else }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: mcp }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: mcp }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          {{- end }}
+          volumeMounts:
+            - { name: mcp-tmp, mountPath: /tmp }
+          resources:
+            {{- toYaml .Values.mcp.resources | nindent 12 }}
+        {{- if $auth.enabled }}
+        - name: nginx-auth
+          image: {{ .Values.mcp.auth.nginxImage | default "nginxinc/nginx-unprivileged:1.27-alpine" }}
+          # Refuse to start on a token nginx can't embed safely (existingSecret
+          # values are not visible at render time), then the stock entrypoint.
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              case "$TOKEN" in
+                "" | *[!A-Za-z0-9._~+/=-]*)
+                  echo "mcp token missing or has characters outside A-Za-z0-9._~+/=- ; refusing to start" >&2
+                  exit 1 ;;
+              esac
+              exec /docker-entrypoint.sh nginx -g 'daemon off;'
+          {{- with .Values.mcp.nginxSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $mcpSecret }}
+                  key: {{ $auth.secretKey }}
+            # Only substitute ${TOKEN}; leave nginx's own $vars intact.
+            - { name: NGINX_ENVSUBST_FILTER, value: "TOKEN" }
+          volumeMounts:
+            - { name: nginx-tpl, mountPath: /etc/nginx/templates }
+            # Read-only rootfs: the entrypoint renders the template into conf.d;
+            # pid + proxy temp files live in /tmp (unprivileged image layout).
+            - { name: nginx-confd, mountPath: /etc/nginx/conf.d }
+            - { name: nginx-tmp, mountPath: /tmp }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 10m, memory: 24Mi }
+            limits: { memory: 64Mi }
+        {{- end }}
+      volumes:
+        - name: mcp-tmp
+          emptyDir: {}
+        {{- if $auth.enabled }}
+        - name: nginx-tpl
+          configMap:
+            name: k8s-tailor-mcp-nginx
+        - name: nginx-confd
+          emptyDir: {}
+        - name: nginx-tmp
+          emptyDir: {}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-tailor-mcp
+  namespace: {{ $ns }}
+  labels:
+    app: k8s-tailor-mcp
+    {{- include "tailor.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: { app: k8s-tailor-mcp }
+  ports:
+    # Front the auth sidecar when enabled; otherwise the MCP directly.
+    - name: http
+      port: 8020
+      targetPort: {{ if $auth.enabled }}8080{{ else }}8020{{ end }}
+{{- end }}

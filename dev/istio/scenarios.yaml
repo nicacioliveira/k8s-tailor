@@ -1,0 +1,123 @@
+# Scenario workloads (2: opt-in proxy resize, 4: template/annotation path) for dev/istio/mesh-test.sh.
+# Policy for the template path: apply=Rollout, and the istio-proxy rule enables proxyAnnotations.
+apiVersion: tailor.k8s-tailor.dev/v1alpha1
+kind: TailorPolicy
+metadata: { name: mesh-roll }
+spec:
+  priority: 300
+  mode: InPlace
+  apply: Rollout
+  selector: { namespaces: ["mesh-demo"], matchLabels: { tailor-test: roll } }
+  containers:
+    - match: { names: ["istio-proxy"] }
+      mode: InPlace
+      apply: Rollout
+      proxyAnnotations: true
+---
+apiVersion: v1
+kind: Service
+metadata: { name: optin, namespace: mesh-demo }
+spec:
+  selector: { app: optin }
+  ports: [{ name: http, port: 8080, targetPort: 8080 }]
+---
+# Scenario 2: the proxy is deliberately starved (limit 50m) and gets load, so Envoy is throttled.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: optin
+  namespace: mesh-demo
+  annotations:
+    tailor.k8s-tailor.dev/container.istio-proxy.mode: InPlace
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: optin } }
+  template:
+    metadata:
+      labels: { app: optin }
+      annotations:
+        sidecar.istio.io/proxyCPU: 20m
+        sidecar.istio.io/proxyCPULimit: 50m
+        sidecar.istio.io/proxyMemory: 64Mi
+        sidecar.istio.io/proxyMemoryLimit: 256Mi
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /www && echo optin > /www/index.html; httpd -f -p 8080 -h /www & while true; do timeout -s KILL 1 yes > /dev/null; sleep 8; done"]
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: 300m, memory: 64Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: optin-load, namespace: mesh-demo }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: optin-load } }
+  template:
+    metadata: { labels: { app: optin-load } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "for i in 1 2 3 4 5 6; do (while true; do wget -q -T 2 -O- http://optin:8080 >/dev/null 2>&1; done) & done; wait"]
+          resources:
+            requests: { cpu: 100m, memory: 32Mi }
+            limits: { memory: 64Mi }
+---
+# Scenario 4: durable path = pod-template annotations (proxy is NOT in the template).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: roll
+  namespace: mesh-demo
+  labels: { tailor-test: roll }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: roll } }
+  template:
+    metadata: { labels: { app: roll } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /www && echo roll > /www/index.html; httpd -f -p 8080 -h /www & while true; do timeout -s KILL 1 yes > /dev/null; sleep 8; done"]
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: 500m, memory: 64Mi }
+            limits: { memory: 128Mi }
+---
+# Scenario 5: sizing at admission. Mode Webhook (no in-place), also for the proxy.
+apiVersion: tailor.k8s-tailor.dev/v1alpha1
+kind: TailorPolicy
+metadata: { name: mesh-webhook }
+spec:
+  priority: 310
+  mode: Webhook
+  selector: { namespaces: ["mesh-demo"], matchLabels: { tailor-test: wh } }
+  containers:
+    - match: { names: ["istio-proxy"] }
+      mode: Webhook
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wh
+  namespace: mesh-demo
+  labels: { tailor-test: wh }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: wh } }
+  template:
+    metadata: { labels: { app: wh } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "mkdir -p /www && echo wh > /www/index.html; httpd -f -p 8080 -h /www & while true; do timeout -s KILL 1 yes > /dev/null; sleep 8; done"]
+          ports: [{ containerPort: 8080 }]
+          resources:
+            requests: { cpu: 500m, memory: 256Mi }
+            limits: { memory: 512Mi }

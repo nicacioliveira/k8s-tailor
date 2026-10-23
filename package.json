@@ -1,0 +1,15 @@
+{
+  "name": "k8s-tailor-ui",
+  "version": "0.1.0",
+  "description": "Build helper: embeds the shared MCP dashboard into the Go binary via go:embed.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build:web": "cd mcp && bun install --frozen-lockfile && bun run build:web && mkdir -p ../web/dist && cp dist/client/web/entries/dashboard-ui.html ../web/dist/index.html",
+    "format": "biome format --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4"
+  }
+}

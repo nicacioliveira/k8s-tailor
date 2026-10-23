@@ -1,0 +1,20 @@
+{{- if and .Values.tailor.enabled (.Values.tailor.presets | default dict).enabled }}
+# Built-in scaling presets (tailor.presets). Reference one from a TailorPolicy
+# with `profileRef: bursty`. Fields left out inherit the policy/global defaults
+# (a zero/absent field never overrides, internal/policy applyRes).
+# Hook: on a first install the TailorProfile kind only exists after the CRD
+# template of this same release is applied.
+apiVersion: tailor.k8s-tailor.dev/v1alpha1
+kind: TailorProfile
+metadata:
+  name: bursty
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  cpu:
+    quantile: 0.95
+{{- end }}

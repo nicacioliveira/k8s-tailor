@@ -1,0 +1,11 @@
+apiVersion: v2
+name: k8s-tailor
+description: Self-contained pod tailor — recommender + in-place/rollout actuation, metrics in VictoriaMetrics (official chart), decisions in a single-node ClickHouse.
+type: application
+version: 0.2.0
+appVersion: "0.1.0"
+dependencies:
+  - name: victoria-metrics-single
+    version: "0.43.0"
+    repository: https://victoriametrics.github.io/helm-charts
+    condition: victoria-metrics-single.enabled

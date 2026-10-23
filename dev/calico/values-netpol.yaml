@@ -1,0 +1,28 @@
+# Layered ON TOP of dev/k3s/values-dev.yaml (helm -f values-dev.yaml -f values-netpol.yaml).
+# Turns on everything the NetworkPolicy test needs: policies, MCP Bearer
+# auth (nginx sidecar, port 8080), the admission webhook (certMode helm) and one
+# allowed peer namespace per peer list.
+
+networkPolicy:
+  enabled: true
+  # Namespace `np-ingress` stands for an ingress controller / VPN gateway.
+  mcpFrom:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: np-ingress } }
+  # Namespace `np-metrics` stands for a fleet Prometheus / Grafana.
+  metricsFrom:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: np-metrics } }
+  # webhookFrom is left empty here (= any source); netpol-test.sh scenario 5b
+  # re-installs with --set to restrict it to the node IP.
+  webhookFrom: []
+
+mcp:
+  auth:
+    enabled: true
+    allowUnauthenticated: false
+
+tailor:
+  # Webhook only mutates pods created in these (opt-in) namespaces.
+  actuateNamespaces: "np-optin"
+  webhook:
+    enabled: true
+    certMode: helm

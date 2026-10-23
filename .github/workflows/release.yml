@@ -1,0 +1,65 @@
+name: Release
+
+# Creates the GitHub Release for a version tag, with notes taken from CHANGELOG.md
+# and the packaged Helm chart attached. Images and the OCI chart are published by
+# build-images.yml (same tag trigger); this workflow does not build or push them.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          # Section "## [<version>]" if present, else "## [Unreleased]".
+          for heading in "$version" "Unreleased"; do
+            awk -v h="## [$heading]" '
+              index($0, h) == 1 { found = 1; next }
+              found && /^## \[/ { exit }
+              found && /^\[[^]]+\]: / { next }
+              found { print }
+            ' CHANGELOG.md > release-notes.md
+            if [ -s release-notes.md ]; then
+              echo "Using CHANGELOG section: $heading"
+              break
+            fi
+          done
+          if [ ! -s release-notes.md ]; then
+            echo "No CHANGELOG section found for $TAG; using a generic note." >&2
+            echo "See CHANGELOG.md." > release-notes.md
+          fi
+
+      - uses: azure/setup-helm@v4
+
+      - name: Package the Helm chart
+        run: |
+          set -euo pipefail
+          helm dependency build chart
+          helm package chart --destination dist
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          prerelease=()
+          if [[ "$TAG" == *-* ]] || [[ "$TAG" == v0.* ]]; then prerelease=(--prerelease); fi
+          gh release create "$TAG" dist/*.tgz \
+            --title "$TAG" \
+            --notes-file release-notes.md \
+            --verify-tag \
+            "${prerelease[@]}"

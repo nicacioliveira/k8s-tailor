@@ -1,0 +1,660 @@
+# Everything namespaced goes into the RELEASE namespace: `helm install -n <ns>`
+# (or ArgoCD destination.namespace). The old `namespace:` value is gone; leaving
+# it in a values file only works when it equals the release namespace. Object
+# names are fixed (k8s-tailor, k8s-tailor-mcp, ...) and the RBAC is
+# cluster-scoped, so install ONE release per cluster.
+
+# CRDs are rendered from templates/crds (NOT chart/crds/, which Helm installs once
+# and never upgrades — new fields like spec.containers would be pruned silently).
+#   install: render the CRDs with the release (upgrades apply schema changes).
+#            Set false when CRDs are managed out of band (e.g. a CRD-only app).
+#   keep:    helm.sh/resource-policy: keep — `helm uninstall` leaves the CRDs (and
+#            every TailorPolicy/Profile/Group/Config) in place. Delete them by hand.
+# Upgrading from <= 0.1.x (CRDs from chart/crds/): see docs/UPGRADE.md (one-time
+# adoption labels, otherwise `helm upgrade` refuses to take over the CRDs).
+crds:
+  install: true
+  keep: true
+
+# Registry credentials for EVERY pod of the release (engine, MCP, ClickHouse and,
+# through the same Helm global, the VictoriaMetrics subchart). Needed when the
+# images come from a private registry/mirror, or while the GHCR packages are
+# private (see docs/UPGRADE.md#images). Items: { name: <docker-registry Secret> }
+# in the release namespace, e.g.
+#   kubectl -n k8s-tailor create secret docker-registry ghcr-pull \
+#     --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT read:packages>
+global:
+  imagePullSecrets: []
+  #  - name: ghcr-pull
+
+# Chart-generated secrets (engine API token, MCP token, ClickHouse password) are
+# created once and reused on upgrade via Helm `lookup`. `helm template` (ArgoCD,
+# Flux, CI) has no API server: a NEW random value is minted on every render. With
+# GitOps set an existingSecret for each, and turn this on so a forgotten one fails
+# the render instead of rotating credentials under running pods.
+secretGeneration:
+  failWithoutLookup: false
+
+# VictoriaMetrics is installed via the OFFICIAL chart (dependency in Chart.yaml),
+# not a hand-rolled template — it owns the StatefulSet, PVC, retention and the
+# promscrape config. fullnameOverride keeps the Service name stable so VM_URL
+# never changes. Set victoria-metrics-single.enabled=false to bring your own
+# Prometheus / VM cluster (point tailor.env.VM_URL at it instead).
+victoria-metrics-single:
+  enabled: true
+  # Dedicated ServiceAccount (the engine's SA no longer carries nodes/proxy). The
+  # subchart's own ClusterRole (pods/services/endpoints/ingresses...) is off: this
+  # chart binds the minimum the scrapes need (templates/rbac.yaml): nodes
+  # get/list/watch (service discovery) + nodes/proxy get for the kubelet jobs, and
+  # pods get/list/watch in the release namespace only (Role) for the engine job.
+  serviceAccount:
+    create: true
+    name: k8s-tailor-vmsingle
+  rbac:
+    create: false
+  server:
+    fullnameOverride: k8s-tailor-vmsingle
+    retentionPeriod: 8d
+    # Restricted security context (non-root, read-only rootfs, no capabilities).
+    # vmsingle only writes to /storage (the PVC). fsGroup makes the PVC writable
+    # by uid 65534. UPGRADE NOTE: a PVC first written by a root vmsingle on a
+    # provisioner that ignores fsGroup (hostPath-type PVs) keeps root-owned files;
+    # either chown the volume once or set podSecurityContext/securityContext back
+    # to {enabled: true} for that install.
+    podSecurityContext:
+      enabled: true
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      fsGroup: 65534
+      fsGroupChangePolicy: OnRootMismatch
+      seccompProfile: { type: RuntimeDefault }
+    securityContext:
+      enabled: true
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities: { drop: ["ALL"] }
+    # High-resolution TSDB on a PVC — never emptyDir (a restart would wipe the
+    # usage history the recommender depends on).
+    persistentVolume:
+      enabled: true
+      size: 10Gi
+      # storageClassName: ""   # "" = cluster default
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits: { memory: 512Mi }
+    # promscrape runs inside vmsingle: ONLY the kubelet resource metrics (2 series),
+    # the two cAdvisor CFS throttling counters and the tailor's own metrics.
+    # High-frequency (5s) for precision.
+    scrape:
+      enabled: true
+      config:
+        global:
+          scrape_interval: 5s
+        scrape_configs:
+          - job_name: kubelet-resource
+            scheme: https
+            tls_config:
+              ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              insecure_skip_verify: true
+            bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+            kubernetes_sd_configs:
+              - role: node
+            relabel_configs:
+              - target_label: __address__
+                replacement: kubernetes.default.svc:443
+              - source_labels: [__meta_kubernetes_node_name]
+                regex: (.+)
+                target_label: __metrics_path__
+                replacement: /api/v1/nodes/${1}/proxy/metrics/resource
+            metric_relabel_configs:
+              - source_labels: [__name__]
+                regex: container_(cpu_usage_seconds_total|memory_working_set_bytes)
+                action: keep
+          # cAdvisor CFS counters, for the engine's throttling signal (censored
+          # CPU, docs/TECHNICAL.md; the engine reads them with
+          # VM_THROTTLE_JOB=kubelet-cadvisor). Same auth/TLS/proxy path as
+          # kubelet-resource. /metrics/cadvisor is large: only the two CFS
+          # counters of real containers are kept, with only the labels the
+          # query needs (namespace/pod/container), and the interval is 15s
+          # (a throttling ratio is read over minutes).
+          - job_name: kubelet-cadvisor
+            scrape_interval: 15s
+            scheme: https
+            tls_config:
+              ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              insecure_skip_verify: true
+            bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+            kubernetes_sd_configs:
+              - role: node
+            relabel_configs:
+              - target_label: __address__
+                replacement: kubernetes.default.svc:443
+              - source_labels: [__meta_kubernetes_node_name]
+                regex: (.+)
+                target_label: __metrics_path__
+                replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+            metric_relabel_configs:
+              - source_labels: [__name__]
+                regex: container_cpu_cfs_(throttled_periods|periods)_total
+                action: keep
+              # pod-level cgroup (container="") and the pause container
+              - source_labels: [container]
+                regex: "|POD"
+                action: drop
+              - regex: __name__|job|instance|namespace|pod|container
+                action: labelkeep
+          # The engine's own /metrics, one target PER POD (pod service
+          # discovery in the release namespace; RBAC: Role k8s-tailor-vmsingle-pods),
+          # so with tailor.replicas > 1 the per-replica series (tailor_leader,
+          # counters, refresh latency) are distinct series labelled pod=<name>
+          # instead of one series that jumps between replicas. The gauges derived
+          # from the shared recommendation state (identical on every replica) are
+          # folded back into ONE series (instance="k8s-tailor:8080", no pod label,
+          # the labels of the former Service scrape), so the engine's own
+          # read-back queries and sum() over them do not double with N replicas.
+          - job_name: tailor
+            metrics_path: /metrics
+            kubernetes_sd_configs:
+              - role: pod
+                namespaces:
+                  own_namespace: true
+            relabel_configs:
+              - source_labels: [__meta_kubernetes_pod_label_app]
+                regex: k8s-tailor
+                action: keep
+              - source_labels: [__meta_kubernetes_pod_container_port_number]
+                regex: "8080"
+                action: keep
+              - source_labels: [__meta_kubernetes_pod_phase]
+                regex: Running
+                action: keep
+              - source_labels: [__meta_kubernetes_pod_name]
+                target_label: pod
+              - source_labels: [__meta_kubernetes_pod_name]
+                target_label: instance
+            metric_relabel_configs:
+              - source_labels: [__name__]
+                regex: tailor_(recommended_cpu_cores|recommended_mem_bytes|current_cpu_cores|current_mem_bytes|waste_usd_week|cpu_p90_cores|mem_p95_bytes|headroom_breach_cpu_share|headroom_breach_mem_share|predicted_mem_bytes|recommendations|workloads|paused)
+                target_label: __tmp_shared
+                replacement: "1"
+              - source_labels: [__tmp_shared]
+                regex: "1"
+                target_label: instance
+                replacement: k8s-tailor:8080
+              - source_labels: [__tmp_shared]
+                regex: "1"
+                target_label: pod
+                replacement: ""
+              - regex: __tmp_shared
+                action: labeldrop
+
+# Durable store for applied DECISIONS (and future telemetry / ML feature tables):
+# a SINGLE-NODE clickhouse-server (official image), templated as a plain
+# StatefulSet (templates/clickhouse.yaml). No operator, no Keeper — a lone
+# non-replicated node needs neither. Node-safe: a hard memory limit + a config.d
+# cap (max_server_memory_usage_to_ram_ratio) so it can never starve the node, and
+# it sits outside every request path.
+#
+# REUSE MODE: set enabled=false to skip the bundled node and point the engine at
+# an EXISTING ClickHouse (e.g. your fleet's ClickHouse) via tailor.env.CH_URL/CH_USER/
+# CH_PASSWORD. Nothing else changes — same tables, same engine. With enabled=true
+# CH_URL defaults to http://k8s-tailor-clickhouse.<release-ns>.svc:8123.
+clickhouse:
+  enabled: true
+  image: clickhouse/clickhouse-server:26.7
+  imagePullPolicy: IfNotPresent
+  # First-boot bootstrap of the app user + database (official image entrypoint).
+  auth:
+    username: tailor
+    # No default password. Precedence:
+    #   1. existingSecret (prod: ESO-managed) — BOTH the CH bootstrap and the
+    #      engine's CH_PASSWORD read it.
+    #   2. password (inline) — rendered into the chart Secret k8s-tailor-clickhouse-auth.
+    #   3. neither — a random 32-char password is generated ONCE and reused on
+    #      upgrade (Helm `lookup` of the existing Secret; helm.sh/resource-policy:
+    #      keep, so it survives uninstall together with the PVC it protects).
+    # GitOps caveat: `helm template` (ArgoCD) cannot `lookup`, so (3) would mint a
+    # NEW password on every render while ClickHouse keeps the one it bootstrapped
+    # on first boot -> the engine loses its decision store. With ArgoCD/Flux set
+    # existingSecret (see deploy/argocd) and secretGeneration.failWithoutLookup=true.
+    password: ""
+    database: tailor
+    existingSecret: ""       # Secret name (e.g. k8s-tailor-ch-auth)
+    passwordKey: password
+  storage: 10Gi
+  # storageClassName: ""     # "" = cluster default
+  # Hard cap — the config.d overlay pins CH memory to 0.8 of this limit.
+  resources:
+    requests: { cpu: 200m, memory: 512Mi }
+    limits: { memory: 2Gi }
+  # Restricted security context. Verified with the official image: runs as
+  # uid 101 with no capabilities and a read-only rootfs (the entrypoint's
+  # users.d, the log dir and /tmp are emptyDirs; data is on the PVC).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile: { type: RuntimeDefault }
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: ["ALL"] }
+
+tailor:
+  enabled: true
+  # Published by .github/workflows/build-images.yml on v* tags (or a manual run).
+  # tag "" = v<chart appVersion>; set digest (sha256:...) to pin immutably. A plain
+  # string ("repo:tag") is still accepted. The image must EXIST: until a release is
+  # published, build it yourself (docs/UPGRADE.md#images) and set repository/tag.
+  image:
+    repository: ghcr.io/nicacioliveira/k8s-tailor
+    tag: ""
+    digest: ""
+  imagePullPolicy: IfNotPresent
+
+  # Replicas of the engine. Every replica recommends and serves the API/UI and
+  # the webhook; only the holder of the coordination.k8s.io Lease actuates
+  # (leaderElection). The reconciler cooldown is rebuilt from the
+  # tailor.k8s-tailor.dev/last-applied annotation on failover. Note: the
+  # in-memory decision ring (/api/actuations without ClickHouse) is per replica.
+  replicas: 1
+  leaderElection:
+    enabled: true              # harmless at 1 replica; REQUIRED for replicas > 1
+    leaseName: k8s-tailor-actuator
+  # Scrape job whose container_cpu_usage_seconds_total /
+  # container_memory_working_set_bytes series feed the recommendations (VM_JOB).
+  # Default = the bundled vmsingle's kubelet job (victoria-metrics-single.server.
+  # scrape: job_name kubelet-resource): a series with the same name and labels
+  # from ANY other scrape job is ignored. Using your own Prometheus/VM
+  # (tailor.env.VM_URL)? Set your kubelet/cAdvisor job name here, or "" to
+  # disable the filter. See docs/KNOWN-ISSUES.md.
+  vmJob: kubelet-resource
+  # Scrape job of the OPTIONAL cAdvisor CFS counters
+  # (container_cpu_cfs_throttled_periods_total / _periods_total) behind the
+  # throttling signal of the censored-CPU rule (VM_THROTTLE_JOB). Default = the
+  # bundled vmsingle's cAdvisor job (kubelet-cadvisor). With your own
+  # Prometheus/VM set its cAdvisor job name, or "" to disable the filter. A
+  # wrong value only removes the throttling signal (the pinned-at-limit check
+  # still works); it never makes the engine act wrongly.
+  vmThrottleJob: kubelet-cadvisor
+  # Ceiling of the OOM-driven memory REQUEST raise for a container WITHOUT a
+  # memory limit that was OOMKilled under node pressure: never above
+  # observedPeak × this factor, and never above the policy memory.max (the lower
+  # wins). Rendered as OOM_MEM_CAP_FACTOR (tailor.env.OOM_MEM_CAP_FACTOR, if set,
+  # wins). Must be a number >= tailor.env.OOM_GROWTH_FACTOR (the render fails
+  # otherwise; the engine refuses to start on a non-finite value).
+  # See docs/CONFIGURATION.md.
+  oomMemCapFactor: 4
+  # Warm cache: the leader writes the recommendations the webhook can serve into the
+  # ConfigMap k8s-tailor-warm (release namespace) after every refresh, and a starting
+  # replica loads them, so pods created right after a restart are sized instead of
+  # admitted unmodified (tailor_webhook_skipped_total{reason="warming_up"}). Loaded
+  # entries serve the webhook only: they never drive an in-place resize and the first
+  # real refresh replaces them. Entries older than ttl are ignored. Adds a namespaced
+  # Role (configmaps: create, and get/update on that one object). Rendered as
+  # WARM_CACHE / WARM_TTL (tailor.env wins). docs/CONFIGURATION.md.
+  warmCache:
+    enabled: true
+    ttl: 15m
+  disruptive:
+    # How long a permanently NotReady sibling holds the disruptive rolling (a resize
+    # with resizePolicy RestartContainer restarts one Ready pod at a time and waits
+    # for the others to be Ready). After this long the rolling proceeds IF the live
+    # PDB and replica reads allow it (never against a PDB; never when fewer than
+    # two replicas would be Ready). "0" = wait forever. Rendered as
+    # DISRUPTIVE_MAX_WAIT (tailor.env.DISRUPTIVE_MAX_WAIT, if set, wins).
+    maxWait: 15m
+  rbac:
+    # Opt-in cluster lookups. true adds `list` on nodes and limitranges to the
+    # engine ClusterRole and sets CLUSTER_LOOKUPS=true: a memory request is then
+    # never raised above the largest allocatable memory among Ready, uncordoned
+    # nodes nor the namespace LimitRange max (type Container). Off (default) = no
+    # access to either, and the OOM ceiling is peak x oomMemCapFactor and the
+    # policy memory.max only. See docs/CONFIGURATION.md.
+    clusterLookups: false
+  # Graceful shutdown budget. On SIGTERM the engine stops actuating (<=10s),
+  # RELEASES the Lease (a standby/new pod takes over in ~2s instead of waiting
+  # the 15s lease expiry), drains the API/webhook (<=5s) and flushes pending
+  # decisions to ClickHouse (<=5s). Lower than ~25 risks a SIGKILL mid-shutdown.
+  terminationGracePeriodSeconds: 30
+  # PodDisruptionBudget, rendered only when replicas > 1 (a minAvailable=1 PDB
+  # on a single replica would block every node drain).
+  pdb:
+    enabled: true
+    minAvailable: 1
+  # Probes. Liveness hits /livez (process only — never the VM/ClickHouse, so a
+  # store outage can't restart-loop the engine); readiness hits /healthz.
+  livenessProbe:
+    httpGet: { path: /livez, port: http }
+    initialDelaySeconds: 10
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readinessProbe:
+    httpGet: { path: /healthz, port: http }
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+  # Namespaces the Tailor never observes nor actuates. The RELEASE namespace is
+  # always added (the Tailor never resizes itself, its ClickHouse or vmsingle).
+  # Seeds the TailorConfig CR on first install (afterwards the CR is the source of
+  # truth — edit it with kubectl; the engine still force-excludes its own ns).
+  excludeNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+    - istio-system
+    - istio-ingress
+    - istio-gateway
+    - linkerd
+    - linkerd-viz
+    - cert-manager
+    - knative-serving
+    - knative-eventing
+    - kourier-system
+    - gatekeeper-system
+    - kyverno
+    - external-secrets
+    - argocd
+    - flux-system
+    - monitoring
+
+  # OPTIONAL defense in depth (k8s >= 1.30): a ValidatingAdmissionPolicy that
+  # limits what the Tailor's ServiceAccount may change when it patches workloads
+  # and pods — no replica, image, selector, serviceAccount, label or (non tailor.*)
+  # annotation changes. Even a compromised engine/API token can then only resize.
+  # See SECURITY.md. validationActions: [Deny] | [Warn, Audit] (dry run).
+  admissionPolicy:
+    enabled: false
+    validationActions: [Deny]
+
+  # Restricted security context (distroless :nonroot image, uid 65532, writes
+  # nothing to disk).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile: { type: RuntimeDefault }
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: ["ALL"] }
+
+  # Pod annotations on the engine. Default exposes the engine's Prometheus
+  # /metrics (:8080) to an annotation-based vmagent (a fleet observability
+  # stack scrapes `prometheus.io/scrape: "true"` pods and stamps the cluster
+  # label at remote-write) — so tailor_* lands in the fleet VM for cross-cluster
+  # dashboards. The bundled vmsingle scrapes the engine directly regardless; this
+  # is only for the FLEET store. Set to {} to keep metrics cluster-local.
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+
+  # SAFE BY DEFAULT: the tool comes up inert — recommendations are computed
+  # (read-only), but NOTHING is actuated until you enable it per group in the UI
+  # (a TailorPolicy CR with mode InPlace/Both). No static actuation/namespace
+  # flags. The global pause switch (TailorConfig CR) is the master kill.
+  #
+  # The mutating webhook sits in the cluster-wide pod-create path, so it is
+  # OPT-IN. The in-place reconciler (non-disruptive, gated per policy) is the
+  # default actuation path and needs no webhook.
+  webhook:
+    enabled: false
+    # MutatingWebhookConfiguration name. The API server runs configurations in
+    # name order (implementation detail, not a documented contract): "zz-" keeps
+    # the Tailor after mesh/secret injectors (istio-sidecar-injector, linkerd-*,
+    # vault-*) so injected sidecars are visible on the first pass. Renaming an
+    # existing install makes Helm delete the old configuration and create this one.
+    configurationName: zz-k8s-tailor
+    # IfNeeded re-invokes the Tailor when a later webhook mutates the pod (e.g.
+    # adds istio-proxy). Never = one pass only.
+    reinvocationPolicy: IfNeeded
+    # How the webhook's serving cert + caBundle are produced:
+    #   helm           — self-signed CA generated by Helm (genCA) and REUSED on
+    #                    upgrade via `lookup`. Stable with `helm install/upgrade`.
+    #                    NOT stable with `helm template` (ArgoCD/Flux): lookup is
+    #                    empty there, so every render mints a new CA + caBundle.
+    #   certManager    — cert-manager issues the cert (self-signed Issuer created
+    #                    here unless certManager.issuerRef is set) and its
+    #                    cainjector keeps the caBundle in sync. Use this for GitOps.
+    #                    The engine hot-reloads the rotated cert (no restart).
+    #   existingSecret — you provide a kubernetes.io/tls Secret (tls.crt/tls.key)
+    #                    named tls.existingSecret and the CA in tls.caBundle (base64).
+    # helm mode FAILS the render when no API server is reachable (helm template /
+    # ArgoCD) instead of silently minting a new CA each time — use certManager or
+    # existingSecret there. allowEphemeralCA=true restores the old behaviour (CI).
+    certMode: helm
+    allowEphemeralCA: false
+    certManager:
+      issuerRef: {}            # e.g. { kind: ClusterIssuer, name: my-ca }; {} = chart self-signed Issuer
+      duration: 8760h          # 1y
+      renewBefore: 720h        # 30d
+    tls:
+      existingSecret: ""
+      caBundle: ""             # base64 PEM CA that signed existingSecret's cert
+  # Comma-separated namespaces where the mutating webhook sizes pods AT creation
+  # (opt-in; empty = no MutatingWebhookConfiguration is created even if the cert
+  # material is present). Only meaningful with webhook.enabled=true. Use this for
+  # ephemeral pods (agent-sandbox pools) that a controller mints on demand and
+  # that can't be patched after the fact.
+  actuateNamespaces: ""
+
+  # Bearer auth for the engine's MUTATING API (POST/DELETE /api/pause, /api/policies,
+  # /api/groups, /api/workload, /api/advisor/*). Reads stay open unless
+  # protectReads=true (below). ON BY DEFAULT:
+  # the engine gets TAILOR_API_AUTH_REQUIRED=true (fails closed without a token)
+  # and the token comes from, in order: existingSecret (prod/ESO) > token (inline)
+  # > a random token generated once into Secret k8s-tailor-api-auth (reused on
+  # upgrade via lookup, kept on uninstall). The MCP pod gets the same token as
+  # TAILOR_API_TOKEN and forwards it, so the MCP tools / UI keep working.
+  # Read it: kubectl -n <ns> get secret k8s-tailor-api-auth -o jsonpath='{.data.token}' | base64 -d
+  # enabled=false = open write API (local dev only).
+  # Host names a BROWSER write to the engine may target (DNS-rebinding guard, on
+  # top of the same-origin check), e.g. [tailor.example.com] when the engine UI
+  # is exposed. [] = any Host with apiAuth on; loopback names only with it off.
+  allowedHosts: []
+  apiAuth:
+    enabled: true
+    token: ""
+    existingSecret: ""
+    secretKey: token
+    # true = GET/HEAD /api/* need the same Bearer token (TAILOR_API_PROTECT_READS).
+    # /healthz, /livez, /metrics (the vmsingle scrape) and the UI shell stay open;
+    # the MCP server already forwards the token, the engine UI asks for it on 401.
+    # Requires enabled=true. Off by default (reads open, as before).
+    protectReads: false
+
+  # Built-in TailorProfiles a TailorPolicy can reference with profileRef
+  # (docs/CONFIGURATION.md, "Presets"). Off by default. enabled=true renders:
+  #   bursty: cpu.quantile 0.95 (default P90), everything else inherited. For
+  #           spiky CPU (short bursts a few % of the time) that P90 sizes at the
+  #           base load: fewer samples above the request, slightly larger request.
+  # Created as a post-install/post-upgrade hook (the CRDs are templates of this
+  # same release, so the kind does not exist yet when the main manifest is
+  # applied on a first install); turning it off later does not delete it.
+  presets:
+    enabled: false
+
+  # Optional, READ-ONLY LLM advisor (second opinion on a recommendation / batch;
+  # see docs/ADVISOR.md). OFF by default; it never decides or actuates. The
+  # engine sends only aggregated metrics (+ names, unless anonymize=true) to an
+  # OpenAI-compatible endpoint (LiteLLM, Ollama, OpenAI...). The API key is NEVER
+  # put in values: reference a Secret (ESO-managed) via existingSecret/secretKey.
+  # Leave existingSecret empty for keyless providers (Ollama).
+  # Routes: POST /api/advisor/review|summary (Bearer-gated when apiAuth is set),
+  # GET /api/advisor/status. NetworkPolicy: the chart restricts only INGRESS, so
+  # no egress rule is needed; if you add a cluster-wide egress policy, allow the
+  # engine pods to reach baseURL yourself.
+  advisor:
+    enabled: false
+    baseURL: ""              # e.g. http://litellm.platform.svc:4000/v1 (no /chat/completions)
+    model: ""                # required when enabled
+    existingSecret: ""       # Secret holding the API key
+    secretKey: api-key
+    anonymize: false         # send ns-1/workload-1 tokens instead of real names
+    language: en             # en | pt-BR
+    timeout: 30s             # per HTTP attempt
+    maxCallsPerHour: 60      # 0 = unlimited
+    tokenBudgetPerHour: 0    # 0 = unlimited
+    cacheTTL: 15m            # 0 disables the cache
+    maxTokens: 800
+    responseFormat: json_schema   # json_schema | json_object | none
+    extraHeaders: ""         # "K=V,K2=V2" (do not put secrets here)
+
+  env:
+    SOURCE: in-cluster
+    # VM_URL / CH_URL default to the bundled stores in the release namespace
+    # (http://k8s-tailor-vmsingle.<ns>.svc:8428, http://k8s-tailor-clickhouse.<ns>.svc:8123).
+    # Set them here only in REUSE MODE (bundled store disabled). CH_URL empty and
+    # clickhouse.enabled=false = in-memory decision ring only.
+    # VM_URL: http://vmsingle.monitoring.svc:8428
+    # CH_URL: http://clickhouse.data.svc:8123
+    CH_DATABASE: tailor
+    CH_USER: tailor
+    # CH_PASSWORD is injected from the ClickHouse Secret (clickhouse.auth). In
+    # REUSE MODE (clickhouse.enabled=false, no existingSecret) set it here.
+    # CH_PASSWORD: ""
+    CH_RETENTION_DAYS: "90"
+    # Samples (one per 300s step, the engine's fixed resolution) required before a
+    # recommendation is "confident" and may be actuated. 288 = 24h: one full
+    # daily cycle (season=daily is the default forecast basis). Demos/dev lower it
+    # (dev/k3s uses 2 = ~10min).
+    MIN_SAMPLES: "288"
+    WINDOW: 7d
+    CPU_QUANTILE: "0.90"
+    MEM_QUANTILE: "0.95"
+    # avg = rate() (smooths sub-window bursts, portable); max = rollup_rate(...,"max")
+    # to capture micro-bursts (spike-accurate, sizes higher; VictoriaMetrics-only).
+    CPU_RATE_MODE: avg
+    MARGIN: "0.15"
+    HALF_LIFE: 24h
+    REFRESH_EVERY: 60s
+    MEM_LIMIT_FACTOR: "1.0"
+    CPU_LIMIT_FACTOR: "0"
+    # OOM-learned memory floor: a container OOMKilled at limit L is re-protected
+    # durably at L×OOM_GROWTH_FACTOR so a later Down/trim can't crush it back to the
+    # value that killed it. The floor is forgotten OOM_FLOOR_TTL after the last OOM.
+    OOM_LEARN: "true"
+    OOM_GROWTH_FACTOR: "1.5"
+    OOM_FLOOR_TTL: 30d
+    PRICE_CPU_CORE_HR: "0.031"
+    PRICE_GB_HR: "0.004"
+    # EXCLUDE_NAMESPACES is rendered from tailor.excludeNamespaces (+ release ns);
+    # a value set here is still honoured and merged in.
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+# MCP server + React dashboard — the product UI, in-cluster. Single browser entry
+# point (serves UI + proxies the engine). This is what makes the chart install
+# EVERYTHING: UI, MCP, engine, VictoriaMetrics and ClickHouse in one release.
+mcp:
+  enabled: true
+  image:
+    repository: ghcr.io/nicacioliveira/k8s-tailor-mcp
+    tag: ""        # "" = v<chart appVersion>
+    digest: ""
+  imagePullPolicy: IfNotPresent
+  env: {}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  # Host names Bun accepts (DNS-rebinding guard), e.g. [tailor.example.com].
+  # [] = any Host when a token is enforced; loopback names only when open (dev).
+  allowedHosts: []
+  # Extra browser Origins accepted on POST /mcp besides the page's own origin
+  # (e.g. a separately hosted UI). [] = same origin only.
+  allowedOrigins: []
+  # Bearer token on the MCP data/RPC surface (/mcp). The MCP forwards the
+  # engine's write token on every call, so an open /mcp = an open write API.
+  # Bun ALWAYS enforces it (MCP_API_TOKEN, constant-time) and refuses any
+  # non-canonical path (400); it refuses to start without a token.
+  #   enabled=true  (default): + nginx sidecar, deny-by-default (only /, /index.html,
+  #                 /healthz, /readyz open), Bun bound to 127.0.0.1.
+  #   enabled=false: no sidecar; Bun listens on 0.0.0.0 with the same token.
+  #   allowUnauthenticated=true (with enabled=false): no token at all. Local dev
+  #                 over port-forward ONLY.
+  # The token may only contain A-Z a-z 0-9 . _ ~ + / = - (the render fails
+  # otherwise; an existingSecret with other characters stops the pod at start).
+  auth:
+    enabled: true
+    allowUnauthenticated: false
+    # Unprivileged nginx build (uid 101, listens on 8080, pid/temp under /tmp) so
+    # the sidecar runs non-root with a read-only rootfs.
+    nginxImage: nginxinc/nginx-unprivileged:1.27-alpine
+    # No default token. Precedence: existingSecret (prod/ESO) > token (inline) >
+    # a random 32-char token generated once and reused on upgrade (Helm lookup;
+    # kept on uninstall). Read it with:
+    #   kubectl -n <ns> get secret k8s-tailor-mcp-auth -o jsonpath='{.data.token}' | base64 -d
+    # GitOps caveat: under `helm template` the generated token changes on every
+    # render — set existingSecret or token explicitly with ArgoCD/Flux.
+    token: ""
+    existingSecret: ""           # ESO-owned Secret name; chart won't create one
+    secretKey: token
+  # Restricted security context. Verified with the oven/bun image (uid 1000,
+  # read-only rootfs, HOME=/tmp on an emptyDir).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile: { type: RuntimeDefault }
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: ["ALL"] }
+  nginxSecurityContext:
+    runAsUser: 101
+    runAsGroup: 101
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: { drop: ["ALL"] }
+
+# NetworkPolicy (needs a CNI that enforces it). INGRESS only:
+#   engine :8080 (API/UI/metrics) <- MCP pods, bundled vmsingle, metricsFrom;
+#   engine :8443 (webhook)        <- webhookFrom, or anyone when empty (the
+#                                    kube-apiserver isn't selectable portably);
+#   ClickHouse                    <- engine only;
+#   MCP (UI + /mcp)               <- pods of the release namespace + mcpFrom
+#                                    (your ingress controller / VPN gateway).
+#   vmsingle :8428 (no auth)      <- engine + metricsFrom (raw usage of every pod
+#                                    in the cluster: keep it narrow).
+# `kubectl port-forward` bypasses NetworkPolicy.
+networkPolicy:
+  enabled: true
+  # Who may reach the MCP/UI besides the release namespace. NetworkPolicy peers.
+  mcpFrom: []
+  #  - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+  # Extra peers allowed to reach the engine's :8080 (e.g. a fleet Prometheus /
+  # vmagent scraping the prometheus.io/* annotations) AND the bundled vmsingle's
+  # :8428 (e.g. Grafana). NetworkPolicy peer list.
+  metricsFrom: []
+  #  - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+  #    podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+  # Who may call the admission webhook (:8443, only with tailor.webhook.enabled):
+  # the kube-apiserver's source addresses. [] = any source: a forged
+  # AdmissionReview is answered (it learns the recommendation) but never recorded
+  # — decisions are recorded only for pods observed in the API server. E.g. the
+  # control plane / node CIDR the API server egresses from:
+  webhookFrom: []
+  #  - ipBlock: { cidr: 10.0.0.0/24 }
+
+# Prometheus Operator ServiceMonitor for the engine's /metrics (needs the
+# monitoring.coreos.com CRDs). Remember networkPolicy.metricsFrom for the
+# Prometheus pods.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}               # e.g. { release: kube-prometheus-stack }

@@ -1,0 +1,151 @@
+{{- if and .Values.tailor.enabled .Values.tailor.webhook.enabled }}
+{{- $svc := "k8s-tailor" }}
+{{- $ns := include "tailor.namespace" . }}
+{{- $cn := printf "%s.%s.svc" $svc $ns }}
+{{- $altNames := list $cn (printf "%s.%s.svc.cluster.local" $svc $ns) }}
+{{- $mode := .Values.tailor.webhook.certMode | default "helm" }}
+{{- $secretName := include "tailor.webhookSecretName" . }}
+{{- $caBundle := "" }}
+{{- if eq $mode "helm" }}
+{{/*
+  certMode=helm: REUSE the existing cert if one is already in the cluster, so a
+  re-render on `helm upgrade` does NOT regenerate CA+cert+caBundle. `lookup` is
+  empty under `helm template`/--dry-run/ArgoCD, so there EVERY render mints a new
+  CA — use certMode=certManager (or existingSecret) with GitOps. The engine
+  hot-reloads the mounted cert, so a regenerated pair is picked up without a
+  restart once the kubelet syncs the Secret (~1 min); admissions in that window
+  are skipped (failurePolicy: Ignore), never blocked.
+*/}}
+{{- if and (not (include "tailor.lookupAvailable" .)) (not .Values.tailor.webhook.allowEphemeralCA) }}
+{{- fail "tailor.webhook.certMode=helm needs a live API server to REUSE its CA (helm install/upgrade). This render has none (helm template / ArgoCD / Flux / client --dry-run): a new CA and caBundle would be minted on every render and the webhook would break silently (failurePolicy: Ignore). Use tailor.webhook.certMode=certManager (recommended for GitOps) or certMode=existingSecret with tls.existingSecret + tls.caBundle. tailor.webhook.allowEphemeralCA=true overrides (CI/lint only)." }}
+{{- end }}
+{{- $existing := lookup "v1" "Secret" $ns $secretName }}
+{{- $tlsCrt := "" }}{{- $tlsKey := "" }}{{- $caCrt := "" }}
+{{- if and $existing $existing.data (index $existing.data "tls.crt") (index $existing.data "ca.crt") }}
+{{- $tlsCrt = index $existing.data "tls.crt" }}
+{{- $tlsKey = index $existing.data "tls.key" }}
+{{- $caCrt = index $existing.data "ca.crt" }}
+{{- else }}
+{{- $ca := genCA "k8s-tailor-ca" 3650 }}
+{{- $cert := genSignedCert $cn nil $altNames 3650 $ca }}
+{{- $tlsCrt = $cert.Cert | b64enc }}
+{{- $tlsKey = $cert.Key | b64enc }}
+{{- $caCrt = $ca.Cert | b64enc }}
+{{- end }}
+{{- $caBundle = $caCrt }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "tailor.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $tlsCrt }}
+  tls.key: {{ $tlsKey }}
+  # CA kept in the same Secret so the next render can reuse it (lookup above).
+  ca.crt: {{ $caCrt }}
+{{- else if eq $mode "certManager" }}
+{{- $issuer := .Values.tailor.webhook.certManager.issuerRef | default dict }}
+{{- if not $issuer.name }}
+# Self-signed Issuer: the Certificate is its own CA; cert-manager's cainjector
+# copies it into the MutatingWebhookConfiguration caBundle on every renewal.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: k8s-tailor-selfsigned
+  namespace: {{ $ns }}
+spec:
+  selfSigned: {}
+---
+{{- end }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: k8s-tailor-webhook
+  namespace: {{ $ns }}
+spec:
+  secretName: {{ $secretName }}
+  commonName: {{ $cn }}
+  dnsNames:
+    {{- range $altNames }}
+    - {{ . }}
+    {{- end }}
+  duration: {{ .Values.tailor.webhook.certManager.duration | default "8760h" }}
+  renewBefore: {{ .Values.tailor.webhook.certManager.renewBefore | default "720h" }}
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages: ["server auth", "digital signature", "key encipherment"]
+  issuerRef:
+    {{- if $issuer.name }}
+    name: {{ $issuer.name }}
+    kind: {{ $issuer.kind | default "Issuer" }}
+    group: {{ $issuer.group | default "cert-manager.io" }}
+    {{- else }}
+    name: k8s-tailor-selfsigned
+    kind: Issuer
+    group: cert-manager.io
+    {{- end }}
+{{- else if eq $mode "existingSecret" }}
+{{- $caBundle = required "tailor.webhook.tls.caBundle (base64 PEM CA) is required with certMode=existingSecret" .Values.tailor.webhook.tls.caBundle }}
+{{- else }}
+{{- fail (printf "tailor.webhook.certMode must be helm|certManager|existingSecret, got %q" $mode) }}
+{{- end }}
+{{- if .Values.tailor.actuateNamespaces }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  # The API server calls MutatingWebhookConfigurations sorted by NAME (stable
+  # sort in k8s.io/apiserver mutating_webhook_manager.go); the official docs only
+  # promise "no consistent order", so this is an optimization, not a contract.
+  # "zz-" sorts after istio-sidecar-injector*, linkerd-proxy-injector-*,
+  # vault-agent-injector-* and most injectors, so on the first pass the injected
+  # sidecars are usually already present. reinvocationPolicy below covers the rest.
+  name: {{ .Values.tailor.webhook.configurationName | default "zz-k8s-tailor" }}
+  {{- if eq $mode "certManager" }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ $ns }}/k8s-tailor-webhook
+  {{- end }}
+webhooks:
+  - name: tailor.k8s-tailor.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    # If the webhook is down, pod creation must NOT break.
+    failurePolicy: Ignore
+    timeoutSeconds: 5
+    # IfNeeded: re-run after a later webhook (e.g. the Istio injector) changes the
+    # pod, so a sidecar added after us is sized too. Our patch is idempotent (a
+    # container already at its recommendation yields no op).
+    reinvocationPolicy: {{ .Values.tailor.webhook.reinvocationPolicy | default "IfNeeded" }}
+    # Only ever touch the explicitly allowed namespaces (opt-in list). The
+    # in-place reconciler needs no webhook — this path is for ephemeral pods
+    # (agent-sandbox and friends) that must be sized AT creation.
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values:
+            {{- range (splitList "," .Values.tailor.actuateNamespaces) }}
+            - {{ . | trim }}
+            {{- end }}
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+        scope: Namespaced
+    clientConfig:
+      service:
+        name: {{ $svc }}
+        namespace: {{ $ns }}
+        path: /mutate
+        port: 8443
+      {{- if $caBundle }}
+      caBundle: {{ $caBundle }}
+      {{- end }}
+{{- end }}
+{{- end }}
