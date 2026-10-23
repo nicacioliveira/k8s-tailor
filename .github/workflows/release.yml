@@ -47,6 +47,8 @@ jobs:
       - name: Package the Helm chart
         run: |
           set -euo pipefail
+          helm repo add victoria-metrics https://victoriametrics.github.io/helm-charts
+          helm repo update
           helm dependency build chart
           helm package chart --destination dist
 
