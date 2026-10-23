@@ -33,7 +33,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Cache bun packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('mcp/bun.lock') }}
@@ -66,7 +66,7 @@ jobs:
       - uses: azure/setup-helm@v4
 
       - name: Cache chart dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: chart/charts
           key: helm-deps-${{ hashFiles('chart/Chart.lock') }}
@@ -103,7 +103,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Cache bun packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('mcp/bun.lock') }}
