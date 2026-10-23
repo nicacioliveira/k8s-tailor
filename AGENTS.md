@@ -36,7 +36,7 @@ Toolchain: Go (version in `go.mod`, currently 1.26.1), Bun (CI pins 1.3.10), Hel
 ```bash
 make ui-build      # bun run build:web -> web/dist/index.html (go:embed needs it; `go build` works without it but serves 503 on /)
 make test          # go test ./...   (builds the UI first)
-go test -race -count=1 ./...        # what CI runs; run it before pushing changes under internal/
+go test -race -count=1 -timeout 40m ./...   # what CI runs (the backtest package alone takes ~10 min); run it before pushing changes under internal/
 make vet           # go vet ./...
 make lint          # gofmt check + mcp tsc + biome format (uses the Biome pinned in mcp/node_modules; run `bun install` in mcp/ first)
 make chart-lint    # helm dep build chart; helm lint --strict chart; helm template

@@ -55,7 +55,9 @@ jobs:
         run: go vet ./...
 
       - name: go test -race
-        run: go test -race -count=1 ./...
+        # The backtest package replays 14-day traces through the real engine and takes about 10 min
+        # under -race, which is the default go test timeout: give it room.
+        run: go test -race -count=1 -timeout 40m ./...
 
   helm:
     name: Helm (lint, template)
