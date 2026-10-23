@@ -9,8 +9,10 @@ minor versions may contain breaking changes; they are called out under "Changed"
 
 ## [Unreleased]
 
-First public version (`0.1.0`, Helm chart `0.2.0`), not yet tagged or published. Nothing here has been
-released: the container images and the chart are published only when a `v*` tag is pushed.
+## [0.1.0] - 2026-10-23
+
+First public version (`0.1.0`, Helm chart `0.2.0`). The container images and the OCI chart are
+published by the `v0.1.0` tag (`build-images.yml`).
 
 ### Added
 
@@ -137,4 +139,5 @@ design decisions (Guaranteed pods, OOM ceiling and LimitRange, node versus cgrou
 "Applied" on kubelets older than 1.33, GitOps interaction and more) are in
 [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md).
 
-[Unreleased]: https://github.com/nicacioliveira/k8s-tailor/commits/master
+[Unreleased]: https://github.com/nicacioliveira/k8s-tailor/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/nicacioliveira/k8s-tailor/releases/tag/v0.1.0
