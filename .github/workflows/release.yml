@@ -16,7 +16,7 @@ jobs:
     permissions:
       contents: write # create the release and upload assets
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Extract release notes from CHANGELOG.md
         env:
