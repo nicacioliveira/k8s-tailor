@@ -1,0 +1,38 @@
+/* Brand tokens shared with the dashboard (mcp/web/ds/tokens.css) and the landing page. */
+@font-face {
+  font-family: "Inter";
+  src: url("../assets/fonts/InterVariable-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  --md-text-font: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --md-code-font: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: oklch(17.5% 0.01 215);
+  --md-default-bg-color--light: oklch(20.5% 0.01 215);
+  --md-default-fg-color: oklch(95.5% 0.004 210);
+  --md-default-fg-color--light: oklch(71% 0.012 210);
+  --md-default-fg-color--lighter: oklch(55% 0.012 210);
+  --md-default-fg-color--lightest: oklch(30% 0.012 215);
+  --md-primary-fg-color: oklch(20.5% 0.01 215);
+  --md-primary-bg-color: oklch(95.5% 0.004 210);
+  --md-accent-fg-color: oklch(86% 0.04 200);
+  --md-typeset-a-color: oklch(86% 0.06 200);
+  --md-code-bg-color: oklch(22% 0.011 215);
+  --md-code-fg-color: oklch(92% 0.006 210);
+  --md-footer-bg-color: oklch(15.5% 0.01 215);
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: oklch(40% 0.067 205);
+  --md-accent-fg-color: oklch(40% 0.067 205);
+  --md-typeset-a-color: oklch(40% 0.067 205);
+}
+
+.md-typeset table:not([class]) { font-size: 0.78rem; }
+.md-typeset .mermaid { text-align: center; }
+.md-typeset img { border-radius: 8px; }

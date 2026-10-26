@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>K8s Tailor: right-size Kubernetes pods in place</title>
+  <meta name="description" content="K8s Tailor learns what each container really uses and resizes running pods in place through the Kubernetes pods/resize subresource. Self-hosted, Apache 2.0, pre-1.0.">
+  <meta name="color-scheme" content="dark light">
+  <meta property="og:title" content="K8s Tailor: right-size Kubernetes pods in place">
+  <meta property="og:description" content="Resize running pods without restarting them, with a reason for every change.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://nicacioliveira.github.io/k8s-tailor/">
+  <link rel="canonical" href="https://nicacioliveira.github.io/k8s-tailor/">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="assets/fonts/InterVariable-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="./" aria-label="K8s Tailor, home">
+      <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5 20.5 7.25v9.5L12 21.5 3.5 16.75v-9.5Z"/><path d="m8 9.25 2.75 2.75L8 14.75"/><path d="m16 9.25-2.75 2.75L16 14.75"/></svg>
+      <span>K8s Tailor</span>
+    </a>
+    <nav aria-label="Main">
+      <a href="docs/">Docs</a>
+      <a href="docs/BACKTEST/">Backtest</a>
+      <a href="docs/KNOWN-ISSUES/">Limitations</a>
+      <a class="gh" href="https://github.com/nicacioliveira/k8s-tailor">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- HERO -->
+<section class="hero wrap" aria-labelledby="h1">
+  <div class="hero-copy">
+    <h1 id="h1">Right-size pods where they run.</h1>
+    <p class="lede">K8s Tailor learns what each container really uses and resizes the <em>running</em> pod in place, through the Kubernetes <code>pods/resize</code> subresource. No restart, no recreated pod, and a reason recorded for every change.</p>
+
+    <div class="cmd" data-copy>
+      <code id="install-cmd">helm install k8s-tailor oci://ghcr.io/nicacioliveira/k8s-tailor/charts/k8s-tailor --version 0.2.0 -n k8s-tailor --create-namespace</code>
+      <button type="button" class="copy" aria-label="Copy the install command">Copy</button>
+    </div>
+
+    <p class="cta">
+      <a class="btn primary" href="docs/">Read the docs</a>
+      <a class="btn" href="docs/INSTALL/">Install guide</a>
+      <a class="btn quiet" href="https://github.com/nicacioliveira/k8s-tailor">Source on GitHub</a>
+    </p>
+    <p class="facts">Pre-1.0 &middot; ships inert &middot; Kubernetes 1.33+ &middot; Apache 2.0</p>
+  </div>
+
+  <figure class="fit" aria-labelledby="fit-cap">
+    <svg viewBox="0 0 560 360" role="img" aria-label="Two measuring rulers. On CPU, a request bar shrinks from 1000 millicores to 320 millicores while usage stays near 280. On memory, the request shrinks from 1024 to 420 mebibytes while usage stays near 380.">
+      <defs>
+        <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--c-room)" stroke-width="2" opacity=".55"/></pattern>
+      </defs>
+
+      <!-- CPU -->
+      <g class="row" transform="translate(0,24)">
+        <text class="lbl" x="0" y="0">CPU</text>
+        <text class="sub" x="560" y="0" text-anchor="end">millicores</text>
+        <g class="ruler" transform="translate(0,30)">
+          <rect class="room" x="0" y="0" width="504" height="46" fill="url(#hatch)"/>
+          <rect class="use" x="0" y="0" width="142" height="46"/>
+          <rect class="req" x="0" y="0" width="504" height="46"/>
+          <line class="p90" x1="142" y1="-8" x2="142" y2="54"/>
+          <text class="tag use-t" x="8" y="29">usage</text>
+          <text class="room-t" x="330" y="29" text-anchor="middle">reserved, unused</text>
+          <g class="ticks"><path d="M0 58v10M126 58v6M252 58v10M378 58v6M504 58v10"/></g>
+          <text class="tick-t" x="0" y="84">0</text><text class="tick-t" x="252" y="84" text-anchor="middle">500</text><text class="tick-t" x="504" y="84" text-anchor="end">1000</text>
+        </g>
+        <g class="dim" transform="translate(0,138)">
+          <path d="M0 0h161M161 -5v10M0 -5v10"/><text x="170" y="4">request: 1000m &rarr; <tspan class="b">320m</tspan></text>
+        </g>
+      </g>
+
+      <!-- Memory -->
+      <g class="row" transform="translate(0,204)">
+        <text class="lbl" x="0" y="0">Memory</text>
+        <text class="sub" x="560" y="0" text-anchor="end">MiB</text>
+        <g class="ruler" transform="translate(0,30)">
+          <rect class="room" x="0" y="0" width="504" height="46" fill="url(#hatch)"/>
+          <rect class="use" x="0" y="0" width="187" height="46"/>
+          <rect class="req mem" x="0" y="0" width="504" height="46"/>
+          <line class="p90" x1="187" y1="-8" x2="187" y2="54"/>
+          <text class="tag use-t" x="8" y="29">usage</text>
+          <text class="room-t" x="350" y="29" text-anchor="middle">reserved, unused</text>
+          <g class="ticks"><path d="M0 58v10M126 58v6M252 58v10M378 58v6M504 58v10"/></g>
+          <text class="tick-t" x="0" y="84">0</text><text class="tick-t" x="252" y="84" text-anchor="middle">512</text><text class="tick-t" x="504" y="84" text-anchor="end">1024</text>
+        </g>
+        <g class="dim" transform="translate(0,138)">
+          <path d="M0 0h207M207 -5v10M0 -5v10"/><text x="216" y="4">request: 1024Mi &rarr; <tspan class="b">420Mi</tspan></text>
+        </g>
+      </g>
+    </svg>
+    <figcaption id="fit-cap">
+      <span class="chip">same pod UID &middot; restartCount 0</span>
+      Illustration with the figures of one workload from the dashboard's synthetic data: the hatched band is reserved capacity nobody uses; the request moves to just above measured usage, in place.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- WHAT IT DOES -->
+<section class="wrap does" aria-labelledby="does-h">
+  <h2 id="does-h">What it does, and what you can check</h2>
+  <dl class="does-list">
+    <div>
+      <dt>Resizes in place</dt>
+      <dd>Running pods are resized, not recreated. The project's smoke test asserts that the pod UID and <code>restartCount</code> are unchanged after a resize. Controller rollouts and Knative Service patches exist as fallbacks, and an opt-in admission webhook applies the same plan when a pod is created.</dd>
+    </div>
+    <div>
+      <dt>Learns from OOM kills</dt>
+      <dd>When a container with a memory limit is OOMKilled, its limit is protected at <code>limit &times; 1.5</code> for 30 days, so a later shrink cannot push it back to the value that killed it. The floor survives engine restarts.</dd>
+    </div>
+    <div>
+      <dt>Explains every change</dt>
+      <dd>Each recommendation shows its quantile, peak, forecast and headroom breach, plus the exact dry-run <code>kubectl</code> patch. Every applied change is a Kubernetes Event and, with ClickHouse, a durable record.</dd>
+    </div>
+    <div>
+      <dt>Knows about sidecars</dt>
+      <dd>Istio, Linkerd and Vault containers are classified and sized from their own usage. They stay recommend-only until you opt them in; init containers are never touched.</dd>
+    </div>
+    <div>
+      <dt>Gates you can read</dt>
+      <dd>Per-resource confidence, a shrink-only or grow-only direction, HPA hold, PodDisruptionBudget budget, QoS checks, cooldowns and one global pause switch. Limits are never shrunk in place.</dd>
+    </div>
+  </dl>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="how" aria-labelledby="how-h">
+  <div class="wrap">
+    <h2 id="how-h">Plain statistics, applied carefully</h2>
+    <p class="how-sub">No model to trust. Three steps you can audit in <a href="docs/TECHNICAL/">the technical reference</a>.</p>
+    <ol class="steps">
+      <li>
+        <h3>Measure</h3>
+        <p>Kubelet resource metrics (CPU rate, memory working set) go into a single-node VictoriaMetrics, in 5-minute steps over a 7-day window.</p>
+      </li>
+      <li class="guards" aria-label="Guards between the steps">
+        <ul><li>confidence</li><li>direction</li><li>HPA</li><li>PDB</li><li>QoS</li><li>cooldown</li></ul>
+      </li>
+      <li>
+        <h3>Recommend</h3>
+        <p>A decay-weighted percentile (p90 CPU, p95 memory), memory floored at the observed peak, change-point trimming and a seasonal forecast that must prove itself first.</p>
+      </li>
+      <li class="guards" aria-hidden="true"><ul><li>pause</li><li>ignore</li></ul></li>
+      <li>
+        <h3>Actuate</h3>
+        <p>Through <code>pods/resize</code> on running pods. Nothing happens to a workload until a <code>TailorPolicy</code> selects it with an actuating mode.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- SCREENSHOTS -->
+<section class="wrap shots" aria-labelledby="shots-h">
+  <h2 id="shots-h">The dashboard shows its reasoning</h2>
+  <p class="how-sub">Every screenshot here uses the dashboard's built-in synthetic data, not a real fleet. <a href="docs/SCREENS/">Tour all screens</a>.</p>
+  <div class="shot-grid">
+    <figure class="s-main">
+      <a href="assets/img/workload-reasoning.png"><img src="assets/img/workload-reasoning.png" width="1440" height="900" loading="lazy" alt="Workload sheet titled Why this recommendation, listing CPU p90 and peak, the CPU request going from 200m to 80m, memory p95, seasonal forecast, headroom breach and the in-place actuation method."></a>
+      <figcaption>The audit view of one recommendation: the numbers behind it and how it would be applied.</figcaption>
+    </figure>
+    <figure>
+      <a href="assets/img/workloads.png"><img src="assets/img/workloads.png" width="1440" height="900" loading="lazy" alt="Workloads table with the current and recommended CPU and memory request of each container, status badges and the automation toggle."></a>
+      <figcaption>One row per container, sidecars included.</figcaption>
+    </figure>
+    <figure>
+      <a href="assets/img/policy-containers.png"><img src="assets/img/policy-containers.png" width="1440" height="900" loading="lazy" alt="Policy editor showing ordered per-container rules: one excludes vault-agent, one opts the injected sidecar into proxy annotations."></a>
+      <figcaption>Policies are Kubernetes objects, with per-container rules.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- INSTALL -->
+<section class="wrap install" aria-labelledby="inst-h">
+  <h2 id="inst-h">Try it without risking anything</h2>
+  <p class="how-sub">It ships inert. Install it, watch the recommendations, and turn actuation on for one namespace when you are ready.</p>
+  <div class="inst-grid">
+    <div>
+      <h3>1. Install</h3>
+      <div class="code" data-copy><pre><code>helm install k8s-tailor \
+  oci://ghcr.io/nicacioliveira/k8s-tailor/charts/k8s-tailor \
+  --version 0.2.0 -n k8s-tailor --create-namespace</code></pre><button type="button" class="copy" aria-label="Copy command 1">Copy</button></div>
+      <p class="note">Public images for linux/amd64 and linux/arm64. Needs Kubernetes 1.33 or later.</p>
+    </div>
+    <div>
+      <h3>2. Opt one namespace in</h3>
+      <div class="code" data-copy><pre><code>apiVersion: tailor.k8s-tailor.dev/v1alpha1
+kind: TailorPolicy
+metadata: { name: pilot }
+spec:
+  priority: 100
+  selector: { namespaces: ["my-pilot-ns"] }
+  mode: InPlace
+  direction: Down   # never raises anything</code></pre><button type="button" class="copy" aria-label="Copy command 2">Copy</button></div>
+      <p class="note">Kill switch at any time: <code>kubectl patch tailorconfig cluster --type=merge -p '{"spec":{"paused":true}}'</code></p>
+    </div>
+  </div>
+</section>
+
+<!-- LIMITS / STATUS -->
+<section class="wrap honest" aria-labelledby="honest-h">
+  <h2 id="honest-h">What it is not, and what has been checked</h2>
+  <div class="honest-grid">
+    <div>
+      <h3>Deliberately not</h3>
+      <ul>
+        <li>A FinOps platform, a horizontal autoscaler, a node autoscaler or an ML system.</li>
+        <li>A source of real savings numbers: dollar figures are estimates from static prices unless you wire OpenCost.</li>
+        <li>Stable yet: the CRDs are <code>v1alpha1</code> and the project is pre-1.0.</li>
+      </ul>
+      <p class="note">Details and reasons: <a href="docs/KNOWN-ISSUES/">known limitations</a>.</p>
+    </div>
+    <div>
+      <h3>Checked so far</h3>
+      <ul>
+        <li>Go tests under <code>-race</code> in CI, plus Helm, MCP and auth-gate jobs.</li>
+        <li>End-to-end runs on a single-node k3s (v1.34), including in-place resize with an unchanged pod UID, sidecars, webhook and leader election.</li>
+        <li>A backtest of nine synthetic scenarios against KRR-style and VPA-style baselines: a simulation, not production evidence.</li>
+        <li><strong>Not</strong> checked: long-running use on a real production fleet.</li>
+      </ul>
+      <p class="note">Method and numbers: <a href="docs/E2E/">end-to-end results</a>, <a href="docs/BACKTEST/">backtest</a>.</p>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-row">
+    <p>K8s Tailor is an independent, self-hosted project under the Apache License 2.0. It was inspired by ideas from VPA, KRR, Goldilocks, OpenCost and Karpenter, and is not affiliated with them.</p>
+    <nav aria-label="Footer">
+      <a href="docs/">Documentation</a>
+      <a href="docs/SECURITY/">Security</a>
+      <a href="docs/CHANGELOG/">Changelog</a>
+      <a href="https://github.com/nicacioliveira/k8s-tailor/releases/tag/v0.1.0">Release v0.1.0</a>
+      <a href="llms.txt">llms.txt</a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+  // Progressive enhancement: the copy buttons only appear to work with JS; the commands stay selectable text.
+  document.querySelectorAll('[data-copy]').forEach(function (box) {
+    var btn = box.querySelector('.copy'); if (!btn || !navigator.clipboard) { if (btn) btn.hidden = true; return; }
+    btn.addEventListener('click', function () {
+      var t = box.querySelector('code').innerText;
+      navigator.clipboard.writeText(t).then(function () { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 1600); });
+    });
+  });
+</script>
+</body>
+</html>

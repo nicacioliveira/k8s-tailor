@@ -30,3 +30,9 @@ chart/charts/
 .idea/
 .vscode/
 .context/
+
+# built site (landing page + docs), see site/build.sh
+/_site/
+.venv/
+__pycache__/
+*.pyc

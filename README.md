@@ -5,6 +5,7 @@
 [![CI](https://github.com/nicacioliveira/k8s-tailor/actions/workflows/ci.yml/badge.svg)](https://github.com/nicacioliveira/k8s-tailor/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-%E2%89%A5%201.33-326ce5.svg)](docs/INSTALL.md#1-prerequisites)
+[![Docs](https://img.shields.io/badge/docs-nicacioliveira.github.io%2Fk8s--tailor-informational.svg)](https://nicacioliveira.github.io/k8s-tailor/docs/)
 [![Status](https://img.shields.io/badge/status-pre--1.0-orange.svg)](#project-status)
 
 ![Overview dashboard (synthetic fixture data)](docs/images/overview.png)

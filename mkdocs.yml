@@ -1,0 +1,92 @@
+# Documentation site (MkDocs Material). Built by .github/workflows/pages.yml together with the
+# landing page in site/ and published at https://nicacioliveira.github.io/k8s-tailor/ (landing)
+# and /docs/ (this site). Build locally: see site/README.md.
+site_name: K8s Tailor documentation
+site_description: Documentation of K8s Tailor, a Kubernetes pod rightsizer built around in-place resize.
+site_url: https://nicacioliveira.github.io/k8s-tailor/docs/
+repo_url: https://github.com/nicacioliveira/k8s-tailor
+repo_name: nicacioliveira/k8s-tailor
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: _site/docs
+copyright: Apache License 2.0. Pre-1.0 software.
+
+hooks:
+  - site/mkdocs_hooks.py
+
+theme:
+  name: material
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
+  font: false # Inter is self-hosted (docs/assets/fonts); no request to a font CDN
+  palette:
+    - scheme: slate
+      primary: custom
+      accent: custom
+      toggle: { icon: material/weather-sunny, name: Switch to light mode }
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle: { icon: material/weather-night, name: Switch to dark mode }
+  features:
+    - navigation.sections
+    - navigation.instant
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - content.code.copy
+    - content.action.edit
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: false
+  - pymdownx.highlight:
+      anchor_linenums: false
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+validation:
+  omitted_files: info
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+nav:
+  - Home: index.md
+  - Project home: https://nicacioliveira.github.io/k8s-tailor/
+  - Getting started:
+      - Install: INSTALL.md
+      - Install with an LLM agent: LLM-INSTALL.md
+      - Upgrade: UPGRADE.md
+  - Concepts:
+      - Product: PRODUCT.md
+      - Architecture: ARCHITECTURE.md
+      - Containers and sidecars: CONTAINERS.md
+  - Reference:
+      - Configuration: CONFIGURATION.md
+      - Technical reference: TECHNICAL.md
+      - Advisor (optional LLM): ADVISOR.md
+      - Screens: SCREENS.md
+      - Design notes: DESIGN.md
+  - Operate:
+      - Troubleshooting: TROUBLESHOOTING.md
+      - Known limitations: KNOWN-ISSUES.md
+  - Evidence:
+      - Backtest: BACKTEST.md
+      - End-to-end results: E2E.md
+  - Project:
+      - Roadmap: ROADMAP.md
+      - Changelog: CHANGELOG.md
+      - Security: SECURITY.md
+      - Contributing: CONTRIBUTING.md
+      - Code of conduct: CODE_OF_CONDUCT.md

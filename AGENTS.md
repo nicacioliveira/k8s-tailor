@@ -25,7 +25,8 @@ live pods, so safety logic is treated as the most sensitive code.
 | `deploy/` | Argo CD and ExternalSecret examples, Grafana dashboard |
 | `dev/k3s/`, `demo/` | Local k3d environment, smoke tests, demo workloads |
 | `dev/calico/`, `dev/istio/` | Throw-away k3d suites: NetworkPolicy proof on Calico, real Istio 1.31.3 mesh test (each with its README) |
-| `docs/` | Documentation (see the index in [README.md](README.md#documentation-index)) |
+| `docs/` | Documentation (see the index in [README.md](README.md#documentation-index)); also the source of the docs site |
+| `site/`, `mkdocs.yml` | Public site: landing page (`site/index.html`, `style.css`) and the MkDocs Material config for `docs/`; `site/build.sh` builds `_site/`, `.github/workflows/pages.yml` publishes it ([site/README.md](site/README.md)) |
 
 Read first: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/TECHNICAL.md](docs/TECHNICAL.md), [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md).
 
