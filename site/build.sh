@@ -11,6 +11,7 @@ mkdir -p _site/assets/fonts _site/assets/img
 cp site/assets/favicon.svg _site/assets/
 cp docs/assets/fonts/InterVariable-latin.woff2 docs/assets/fonts/Inter-OFL.txt _site/assets/fonts/
 for f in workload-reasoning workloads policy-containers; do cp "docs/images/$f.png" _site/assets/img/; done
+cp -r site/media _site/media
 cp llms.txt llms-full.txt _site/ 2>/dev/null || true
 cp site/404.html _site/404.html
 touch _site/.nojekyll

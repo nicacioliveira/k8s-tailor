@@ -160,6 +160,25 @@ h1 { font-size: clamp(2.6rem, 5.6vw, 4.6rem); line-height: 1.02; letter-spacing:
 .shot-grid img { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
 .shot-grid figcaption { margin-top: .65rem; font-size: .88rem; color: var(--ink-2); }
 
+
+/* hero video, motion clips, MCP */
+.demo { margin: 0; }
+.demo video, .mcp-clip video, .motion-grid video { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.demo figcaption, .mcp-clip figcaption, .motion-grid figcaption { margin-top: .65rem; font-size: .88rem; color: var(--ink-2); }
+.motion-grid figcaption strong { color: var(--ink); }
+.fit-sec { padding-block: 0 clamp(2.5rem, 6vw, 4.5rem); }
+.fit-sec .fit { max-width: 760px; margin-inline: auto; }
+.motion { padding-block: clamp(3rem, 7vw, 6rem); border-top: 1px solid var(--line); }
+.motion h2, .mcp h2 { font-size: clamp(1.7rem, 3.2vw, 2.5rem); line-height: 1.12; letter-spacing: -0.024em; }
+.motion-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(1.25rem, 3vw, 2.25rem); margin-top: clamp(1.75rem, 4vw, 2.75rem); }
+.motion-grid figure, .mcp-clip { margin: 0; }
+.mcp { display: grid; grid-template-columns: minmax(0, 1fr); gap: clamp(1.5rem, 4vw, 2.5rem); padding-block: clamp(3rem, 7vw, 6rem); border-top: 1px solid var(--line); }
+.mcp-copy p { color: var(--ink-2); max-width: 70ch; }
+.mcp-copy .code { max-width: 70ch; }
+.mcp-copy .code pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.mcp-copy .code code { white-space: inherit; }
+.mcp-copy .code { margin-top: 1.25rem; }
+
 /* install */
 .install { padding-block: clamp(2.5rem, 6vw, 5rem); border-top: 1px solid var(--line); }
 .inst-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(1.25rem, 3vw, 2.5rem); margin-top: 2rem; }
@@ -195,7 +214,7 @@ h1 { font-size: clamp(2.6rem, 5.6vw, 4.6rem); line-height: 1.02; letter-spacing:
   .steps { grid-template-columns: minmax(0, 1fr); }
   .steps .guards { border-top: 0; padding: 0; }
   .guards ul { flex-direction: row; flex-wrap: wrap; justify-content: flex-start; }
-  .shot-grid { grid-template-columns: minmax(0, 1fr); }
+  .shot-grid, .motion-grid, .mcp { grid-template-columns: minmax(0, 1fr); }
   .shot-grid .s-main { grid-row: auto; }
   .inst-grid, .honest-grid { grid-template-columns: minmax(0, 1fr); }
   .foot-row { grid-template-columns: minmax(0, 1fr); }
@@ -212,3 +231,8 @@ h1 { font-size: clamp(2.6rem, 5.6vw, 4.6rem); line-height: 1.02; letter-spacing:
   .fit .req, .fit .dim { animation: none; }
   .btn { transition: none; }
 }
+
+#lightbox { width: min(96vw, 1500px); padding: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); color: var(--ink); }
+#lightbox::backdrop { background: oklch(10% 0.01 215 / 0.82); }
+#lightbox video { display: block; width: 100%; height: auto; }
+#lightbox .close { position: absolute; top: .6rem; right: .6rem; z-index: 1; font: inherit; font-size: .85rem; padding: .3rem .8rem; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }

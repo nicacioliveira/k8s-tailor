@@ -54,6 +54,20 @@
     <p class="facts">Pre-1.0 &middot; ships inert &middot; Kubernetes 1.33+ &middot; Apache 2.0</p>
   </div>
 
+  <figure class="demo" aria-labelledby="demo-cap">
+    <video controls preload="metadata" playsinline poster="media/demo.jpg" width="1600" height="900">
+      <source src="media/demo.mp4" type="video/mp4">
+      <a href="media/demo.mp4">Watch the 80-second demo (MP4)</a>
+    </video>
+    <figcaption id="demo-cap">
+      <span class="chip">real run &middot; sound on</span>
+      80 seconds on a local k3d cluster with the published v0.1.0 images: in-place resize, a Guaranteed pod, an OOMKill the engine learns from. Scale-down timings were shortened for the recording.
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ILLUSTRATION -->
+<section class="wrap fit-sec" aria-label="How a request moves">
   <figure class="fit" aria-labelledby="fit-cap">
     <svg viewBox="0 0 560 360" role="img" aria-label="Two measuring rulers. On CPU, a request bar shrinks from 1000 millicores to 320 millicores while usage stays near 280. On memory, the request shrinks from 1024 to 420 mebibytes while usage stays near 380.">
       <defs>
@@ -158,6 +172,76 @@
   </div>
 </section>
 
+<!-- UI IN MOTION -->
+<section class="wrap motion" aria-labelledby="motion-h">
+  <h2 id="motion-h">Every screen, in motion</h2>
+  <p class="how-sub">Short loops of the dashboard; click one to enlarge it. They use its built-in synthetic data (invented workloads), not a real fleet. <a href="docs/SCREENS/">Tour all screens</a>.</p>
+  <div class="motion-grid">
+    <figure>
+      <video class="loop" muted loop playsinline preload="none" poster="media/ui-overview.jpg" width="1280" height="720" aria-label="Overview screen of the dashboard">
+        <source src="media/ui-overview.mp4" type="video/mp4">
+      </video>
+      <figcaption><strong>Overview.</strong> Cost, waste and headroom at a glance; change the range from 5 minutes to 7 days.</figcaption>
+    </figure>
+    <figure>
+      <video class="loop" muted loop playsinline preload="none" poster="media/ui-workloads.jpg" width="1280" height="720" aria-label="Workloads screen of the dashboard">
+        <source src="media/ui-workloads.mp4" type="video/mp4">
+      </video>
+      <figcaption><strong>Workloads.</strong> Filter by OOM risk, search, open a workload to see every container and its mode.</figcaption>
+    </figure>
+    <figure>
+      <video class="loop" muted loop playsinline preload="none" poster="media/ui-savings.jpg" width="1280" height="720" aria-label="Savings screen of the dashboard">
+        <source src="media/ui-savings.mp4" type="video/mp4">
+      </video>
+      <figcaption><strong>Savings.</strong> What is still reclaimable and what applied resizes already captured, with the arithmetic shown.</figcaption>
+    </figure>
+    <figure>
+      <video class="loop" muted loop playsinline preload="none" poster="media/ui-policies.jpg" width="1280" height="720" aria-label="Policies screen of the dashboard">
+        <source src="media/ui-policies.mp4" type="video/mp4">
+      </video>
+      <figcaption><strong>Policies.</strong> Rightsizing rules as Kubernetes objects: scope, mode, method, headroom, guardrails.</figcaption>
+    </figure>
+    <figure>
+      <video class="loop" muted loop playsinline preload="none" poster="media/ui-grouping.jpg" width="1280" height="720" aria-label="Grouping screen of the dashboard">
+        <source src="media/ui-grouping.mp4" type="video/mp4">
+      </video>
+      <figcaption><strong>Grouping.</strong> Collapse rules fold many workloads into one unit that shares a profile.</figcaption>
+    </figure>
+    <figure>
+      <video class="loop" muted loop playsinline preload="none" poster="media/ui-decisions.jpg" width="1280" height="720" aria-label="Decisions screen of the dashboard">
+        <source src="media/ui-decisions.mp4" type="video/mp4">
+      </video>
+      <figcaption><strong>Decisions.</strong> Every resize applied, with the method and the exact before and after.</figcaption>
+    </figure>
+    <figure>
+      <video class="loop" muted loop playsinline preload="none" poster="media/ui-health.jpg" width="1280" height="720" aria-label="Health screen of the dashboard">
+        <source src="media/ui-health.mp4" type="video/mp4">
+      </video>
+      <figcaption><strong>Health.</strong> Engine posture, data sources and what is still warming up.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- MCP -->
+<section class="wrap mcp" aria-labelledby="mcp-h">
+  <div class="mcp-copy">
+    <h2 id="mcp-h">It is also a complete MCP server</h2>
+    <p>Everything the dashboard does is an MCP tool: 20 of them, 14 read-only and 6 that write. Point Claude Code, or any MCP client, at <code>/mcp</code> and ask about your cluster in plain language. The dashboard itself is also published as an MCP App, so clients that support the extension render it inline.</p>
+    <div class="cmd code" data-copy>
+      <pre><code>claude mcp add --transport http k8s-tailor http://localhost:8020/mcp \
+  --header "Authorization: Bearer $MCP_TOKEN"</code></pre>
+      <button type="button" class="copy" aria-label="Copy the command">Copy</button>
+    </div>
+    <p class="note">The endpoint is Bearer-gated by default. <a href="docs/CONFIGURATION/#mcp-tools">All tools and their arguments</a>.</p>
+  </div>
+  <figure class="mcp-clip">
+    <video class="loop" muted loop playsinline preload="none" poster="media/mcp.jpg" width="1600" height="900" aria-label="Terminal session: an MCP client calls the overview, recommendations, patch preview and pause tools.">
+      <source src="media/mcp.mp4" type="video/mp4">
+    </video>
+    <figcaption>Tool calls and results are real output from a live k3d cluster running v0.1.0 (trimmed). The prompt is an example.</figcaption>
+  </figure>
+</section>
+
 <!-- SCREENSHOTS -->
 <section class="wrap shots" aria-labelledby="shots-h">
   <h2 id="shots-h">The dashboard shows its reasoning</h2>
@@ -231,6 +315,8 @@ spec:
   </div>
 </section>
 
+<dialog id="lightbox" aria-label="Enlarged clip"><form method="dialog"><button class="close" aria-label="Close">Close</button></form><video muted loop playsinline controls></video></dialog>
+
 </main>
 
 <footer class="foot">
@@ -255,6 +341,26 @@ spec:
       navigator.clipboard.writeText(t).then(function () { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 1600); });
     });
   });
+
+  // Looping clips play only while visible, and not at all for visitors who prefer reduced motion (they get the poster and can open the file).
+  (function () {
+    var vids = document.querySelectorAll('video.loop');
+    if (!('IntersectionObserver' in window) || matchMedia('(prefers-reduced-motion: reduce)').matches) { vids.forEach(function (v) { v.controls = true; }); return; }
+    var io = new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) { e.target.preload = 'auto'; e.target.play().catch(function () {}); } else { e.target.pause(); } }); }, { threshold: 0.35 });
+    vids.forEach(function (v) { io.observe(v); });
+  })();
+
+  // Click a loop to open it large.
+  (function () {
+    var dlg = document.getElementById('lightbox'); if (!dlg || !dlg.showModal) return;
+    var big = dlg.querySelector('video');
+    document.querySelectorAll('video.loop').forEach(function (v) {
+      v.style.cursor = 'zoom-in';
+      v.addEventListener('click', function () { big.src = v.currentSrc; big.poster = v.poster; dlg.showModal(); big.play().catch(function () {}); });
+    });
+    dlg.addEventListener('close', function () { big.pause(); big.removeAttribute('src'); });
+    dlg.addEventListener('click', function (e) { if (e.target === dlg) dlg.close(); });
+  })();
 </script>
 </body>
 </html>
