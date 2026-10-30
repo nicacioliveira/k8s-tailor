@@ -2,7 +2,7 @@
 # server serves — the engine embeds it too, so :8080 and the MCP UI are identical.
 # Pinned to the BUILD platform: the output is a static JS bundle (arch-agnostic),
 # so there's no need to emulate this stage per target arch.
-FROM --platform=$BUILDPLATFORM oven/bun:1.4.3 AS web
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.4 AS web
 WORKDIR /app
 COPY mcp/package.json mcp/bun.lock ./
 RUN bun install --frozen-lockfile
