@@ -65,7 +65,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
 
       - name: Cache chart dependencies
         uses: actions/cache@v4
@@ -140,7 +140,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
 
       - uses: oven-sh/setup-bun@v2
         with:
