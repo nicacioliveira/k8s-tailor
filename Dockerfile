@@ -14,7 +14,7 @@ RUN bun run build:web \
 # Stage 2: build the Go binary with the embedded UI. Runs natively on the build
 # platform and CROSS-COMPILES to the target arch (CGO off → trivial), so multi-arch
 # builds don't pay the QEMU tax.
-FROM --platform=$BUILDPLATFORM golang:1.26 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27 AS build
 ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
